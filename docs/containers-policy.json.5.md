@@ -30,7 +30,9 @@ Policy requirements can be defined for:
 
   Usually, a scope can be defined to match a single image, and various prefixes of
   such a most specific scope define namespaces of matching images.
+
 - A default policy for a single transport, expressed using an empty string as a scope
+
 - A global default policy.
 
 If multiple policy requirements match a given image, only the requirements from the most specific match apply,
@@ -59,17 +61,40 @@ The global `default` set of policy requirements is mandatory; all of the other f
 <!-- NOTE: Keep this in sync with transports/transports.go! -->
 ## Supported transports and their scopes
 
+See containers-transports(5) for general documentation about the transports and their reference syntax.
+
 ### `atomic:`
 
-The `atomic:` transport refers to images in an Atomic Registry.
+The deprecated `atomic:` transport refers to images in an Atomic Registry.
 
 Supported scopes use the form _hostname_[`:`_port_][`/`_namespace_[`/`_imagestream_ [`:`_tag_]]],
 i.e. either specifying a complete name of a tagged image, or prefix denoting
-a host/namespace/image stream or a wildcarded expression for matching all
+a host/namespace/image stream, or a wildcarded expression starting with `*.` for matching all
 subdomains. For wildcarded subdomain matching, `*.example.com` is a valid case, but `example*.*.com` is not.
 
 *Note:* The _hostname_ and _port_ refer to the container registry host and port (the one used
 e.g. for `docker pull`), _not_ to the OpenShift API host and port.
+
+### `containers-storage:`
+
+Supported scopes have the form `[`_storage-specifier_`]`_image-scope_.
+
+`[`_storage-specifier_`]` is usually `[`_graph-driver-name_`@`_graph-root_`]`, e.g. `[overlay@/var/lib/containers/storage]`.
+
+_image-scope_ matching the individual image is
+- a named Docker reference *in the fully expanded form*, either using a tag or digest. For example, `docker.io/library/busybox:latest` (*not* `busybox:latest`)
+- and/or (depending on which one the user’s input provides) `@`_image-id_
+
+More general scopes are prefixes of individual-image scopes, and specify a less-precisely-specified image, or a repository
+(by omitting first the image ID, if any; then the digest, if any; and finally a tag, if any),
+a repository namespace, or a registry host (by only specifying the host name and possibly a port number).
+
+Finally, two full-store specifiers matching all images in the store are valid scopes:
+- `[`_graph-driver-name_`@`_graph-root_`]` and
+- `[`_graph-root_`]`
+
+Note that some tools like Podman and Buildah hard-code overrides of the signature verification policy for “push” operations,
+allowing these operations regardless of configuration in `policy.json`.
 
 ### `dir:`
 
@@ -78,10 +103,10 @@ The `dir:` transport refers to images stored in local directories.
 Supported scopes are paths of directories (either containing a single image or
 subdirectories possibly containing images).
 
-*Note:* The paths must be absolute and contain no symlinks. Paths violating these requirements may be silently ignored.
-
-The top-level scope `"/"` is forbidden; use the transport default scope `""`,
-for consistency with other transports.
+*Note:*
+- The paths must be absolute and contain no symlinks. Paths violating these requirements may be silently ignored.
+- The top-level scope `"/"` is forbidden; use the transport default scope `""`,
+  for consistency with other transports.
 
 ### `docker:`
 
@@ -91,24 +116,73 @@ Scopes matching individual images are named Docker references *in the fully expa
 using a tag or digest. For example, `docker.io/library/busybox:latest` (*not* `busybox:latest`).
 
 More general scopes are prefixes of individual-image scopes, and specify a repository (by omitting the tag or digest),
-a repository namespace, or a registry host (by only specifying the host name)
-or a wildcarded expression for matching all subdomains. For wildcarded subdomain
+a repository namespace, or a registry host (by only specifying the host name and possibly a port number)
+or a wildcarded expression starting with `*.`, for matching all subdomains (not including a port number). For wildcarded subdomain
+matching, `*.example.com` is a valid case, but `example*.*.com` is not.
+
+### `docker-archive:`
+
+Only the default `""` scope is supported.
+
+### `docker-daemon:`
+
+For references using the _algo:digest_ format (referring to an image ID), only the default `""` scope is used.
+
+For images using a named reference, scopes matching individual images are *in the fully expanded form*, either
+using a tag or digest. For example, `docker.io/library/busybox:latest` (*not* `busybox:latest`).
+
+More general named scopes are prefixes of individual-image scopes, and specify a repository (by omitting the tag or digest),
+a repository namespace, or a registry host (by only specifying the host name and possibly a port number)
+or a wildcarded expression starting with `*.`, for matching all subdomains (not including a port number). For wildcarded subdomain
 matching, `*.example.com` is a valid case, but `example*.*.com` is not.
 
 ### `oci:`
 
 The `oci:` transport refers to images in directories compliant with "Open Container Image Layout Specification".
 
-Supported scopes use the form _directory_`:`_tag_, and _directory_ referring to
-a directory containing one or more tags, or any of the parent directories.
+Supported scopes are paths to directories
+(either containing an OCI layout, or subdirectories possibly containing OCI layout directories).
+The _reference_ annotation value, if any, is not used.
 
-*Note:* See `dir:` above for semantics and restrictions on the directory paths, they apply to `oci:` equivalently.
+*Note:*
+- The paths must be absolute and contain no symlinks. Paths violating these requirements may be silently ignored.
+- The top-level scope `"/"` is forbidden; use the transport default scope `""`,
+  for consistency with other transports.
+
+### `oci-archive:`
+
+Supported scopes are paths to OCI archives, and their parent directories
+(either containing a single archive, or subdirectories possibly containing archives).
+The _reference_ annotation value, if any, is not used.
+
+*Note:*
+- The paths must be absolute and contain no symlinks. Paths violating these requirements may be silently ignored.
+- The top-level scope `"/"` is forbidden; use the transport default scope `""`,
+  for consistency with other transports.
+
+### `ostree`:
+
+Supported scopes have the form _repo-path_`:`_image-scope_; _repo_path_ is the path to the OSTree repository.
+
+_image-scope_ is the _docker_reference_ part of the reference, with with a `:latest` tag implied if no tag is present,
+and parent namespaces of the _docker_reference_ value (by omitting the tag, or a prefix specifying a higher-level namespace).
+
+*Note:*
+- The _repo_path_ must be absolute and contain no symlinks. Paths violating these requirements may be silently ignored.
+
+### `sif:`
+
+Supported scopes are paths to Singularity images, and their parent directories
+(either containing images, or subdirectories possibly containing images).
+
+*Note:*
+- The paths must be absolute and contain no symlinks. Paths violating these requirements may be silently ignored.
+- The top-level scope `"/"` is forbidden; use the transport default scope `""`,
+  for consistency with other transports.
 
 ### `tarball:`
 
-The `tarball:` transport refers to tarred up container root filesystems.
-
-Scopes are ignored.
+The `tarball:` transport is an implementation detail of some import workflows. Only the default `""` scope is supported.
 
 ## Policy Requirements
 
@@ -149,20 +223,21 @@ This requirement rejects every image, and every signature.
 
 ### `signedBy`
 
-This requirement requires an image to be signed with an expected identity, or accepts a signature if it is using an expected identity and key.
+This requirement requires an image to be signed using “simple signing” with an expected identity, or accepts a signature if it is using an expected identity and key.
 
 ```js
 {
     "type":    "signedBy",
     "keyType": "GPGKeys", /* The only currently supported value */
     "keyPath": "/path/to/local/keyring/file",
+    "keyPaths": ["/path/to/local/keyring/file1","/path/to/local/keyring/file2"…],
     "keyData": "base64-encoded-keyring-data",
     "signedIdentity": identity_requirement
 }
 ```
 <!-- Later: other keyType values -->
 
-Exactly one of `keyPath` and `keyData` must be present, containing a GPG keyring of one or more public keys.  Only signatures made by these keys are accepted.
+Exactly one of `keyPath`, `keyPaths` and `keyData` must be present, containing a GPG keyring of one or more public keys.  Only signatures made by these keys are accepted.
 
 The `signedIdentity` field, a JSON object, specifies what image identity the signature claims about the image.
 One of the following alternatives are supported:
@@ -236,6 +311,71 @@ used with `exactReference` or `exactRepository`.
 
 <!-- ### `signedBaseLayer` -->
 
+
+### `sigstoreSigned`
+
+This requirement requires an image to be signed using a sigstore signature with an expected identity and key.
+
+```js
+{
+    "type":    "sigstoreSigned",
+    "keyPath": "/path/to/local/public/key/file",
+    "keyPaths": ["/path/to/first/public/key/one", "/path/to/first/public/key/two"],
+    "keyData": "base64-encoded-public-key-data",
+    "keyDatas": ["base64-encoded-public-key-one-data", "base64-encoded-public-key-two-data"]
+    "fulcio": {
+        "caPath": "/path/to/local/CA/file",
+        "caData": "base64-encoded-CA-data",
+        "oidcIssuer": "https://expected.OIDC.issuer/",
+        "subjectEmail", "expected-signing-user@example.com",
+    },
+    "pki": {
+        "caRootsPath": "/path/to/local/CARoots/file",
+        "caRootsData": "base64-encoded-CARoots-data",
+        "caIntermediatesPath": "/path/to/local/CAIntermediates/file",
+        "caIntermediatesData": "base64-encoded-CAIntermediates-data",
+        "subjectHostname": "expected-signing-hostname.example.com",
+        "subjectEmail": "expected-signing-user@example.com"
+    },
+    "rekorPublicKeyPath": "/path/to/local/public/key/file",
+    "rekorPublicKeyPaths": ["/path/to/local/public/key/one","/path/to/local/public/key/two"],
+    "rekorPublicKeyData": "base64-encoded-public-key-data",
+    "rekorPublicKeyDatas": ["base64-encoded-public-key-one-data","base64-encoded-public-key-two-data"],
+    "signedIdentity": identity_requirement
+}
+```
+Exactly one of `keyPath`, `keyPaths`, `keyData`, `keyDatas`, `fulcio` and `pki` must be present.
+
+If `keyPath` or `keyData` is present, it contains a sigstore public key.
+Only signatures made by this key are accepted.
+
+If `keyPaths` or `keyDatas` is present, it contains sigstore public keys.
+Only signatures made by any key in the list are accepted.
+
+If `fulcio` is present, the signature must be based on a Fulcio-issued certificate.
+One of `caPath` and `caData` must be specified, containing the public key of the Fulcio instance.
+Both `oidcIssuer` and `subjectEmail` are mandatory,
+exactly specifying the expected identity provider,
+and the identity of the user obtaining the Fulcio certificate.
+
+If `pki` is present, the signature must be based on a non-Fulcio X.509 certificate.
+One of `caRootsPath` and `caRootsData` must be specified, containing certificates of the CAs.
+Only one of `caIntermediatesPath` and `caIntermediatesData` can be present, containing certificates of the intermediate CAs.
+One of `subjectEmail` and `subjectHostname` must be specified, exactly specifying the expected identity to which the certificate was issued.
+
+At most one of `rekorPublicKeyPath`, `rekorPublicKeyPaths`, `rekorPublicKeyData` and `rekorPublicKeyDatas` can be present;
+it is mandatory if `fulcio` is specified.
+If a Rekor public key is specified,
+the signature must have been uploaded to a Rekor server
+and the signature must contain an (offline-verifiable) “signed entry timestamp”
+proving the existence of the Rekor log record,
+signed by one of the provided public keys.
+
+The `signedIdentity` field has the same semantics as in the `signedBy` requirement described above.
+Note that `cosign`-created signatures only contain a repository, so only `matchRepository` and `exactRepository` can be used to accept them (and that does not protect against substitution of a signed image with an unexpected tag).
+
+To use this with images hosted on image registries, the `use-sigstore-attachments` option needs to be enabled for the relevant registry or repository in the client's containers-registries.d(5).
+
 ## Examples
 
 It is *strongly* recommended to set the `default` policy to `reject`, and then
@@ -255,10 +395,69 @@ selectively allow individual transports and scopes as desired.
             "docker.io/openshift": [{"type": "insecureAcceptAnything"}],
             /* Similarly, allow installing the “official” busybox images.  Note how the fully expanded
                form, with the explicit /library/, must be used. */
-            "docker.io/library/busybox": [{"type": "insecureAcceptAnything"}]
+            "docker.io/library/busybox": [{"type": "insecureAcceptAnything"}],
             /* Allow installing images from all subdomains */
-            "*.temporary-project.example.com": [{"type": "insecureAcceptAnything"}]
-            /* Other docker: images use the global default policy and are rejected */
+            "*.temporary-project.example.com": [{"type": "insecureAcceptAnything"}],
+            /* A sigstore-signed repository */
+            "hostname:5000/myns/sigstore-signed-with-full-references": [
+                {
+                    "type": "sigstoreSigned",
+                    "keyPath": "/path/to/sigstore-pubkey.pub"
+                }
+            ],
+            /* A sigstore-signed repository using the community Fulcio+Rekor servers.
+
+               The community servers’ public keys can be obtained from
+               https://github.com/sigstore/sigstore/tree/main/pkg/tuf/repository/targets .  */
+            "hostname:5000/myns/sigstore-signed-fulcio-rekor": [
+                {
+                    "type": "sigstoreSigned",
+                    "fulcio": {
+                        "caPath": "/path/to/fulcio_v1.crt.pem",
+                        "oidcIssuer": "https://github.com/login/oauth",
+                        "subjectEmail": "test-user@example.com"
+                    },
+                    "rekorPublicKeyPath": "/path/to/rekor.pub",
+                }
+            ],
+            /* A Sigstore-signed repository using a certificate generated by a custom public-key infrastructure.*/
+            "hostname:5000/myns/sigstore-signed-byopki": [
+                {
+                    "type": "sigstoreSigned",
+                    "pki": {
+                        "caRootsPath": "/path/to/pki_root_crts.pem",
+                        "caIntermediatesPath": "/path/to/pki_intermediate_crts.pem",
+                        "subjectHostname": "test-user.example.com"
+                        "subjectEmail": "test-user@example.com"
+                    }
+                }
+            ],
+            /* A sigstore-signed repository, accepts signatures by /usr/bin/cosign */
+            "hostname:5000/myns/sigstore-signed-allows-malicious-tag-substitution": [
+                {
+                    "type": "sigstoreSigned",
+                    "keyPath": "/path/to/sigstore-pubkey.pub",
+                    "signedIdentity": {"type": "matchRepository"}
+                }
+            ],
+            /* A sigstore-signed repository using the community Fulcio+Rekor servers,
+               accepts signatures by /usr/bin/cosign.
+
+               The community servers’ public keys can be obtained from
+               https://github.com/sigstore/sigstore/tree/main/pkg/tuf/repository/targets .  */
+            "hostname:5000/myns/sigstore-signed-fulcio-rekor- allows-malicious-tag-substitution": [
+                {
+                    "type": "sigstoreSigned",
+                    "fulcio": {
+                        "caPath": "/path/to/fulcio_v1.crt.pem",
+                        "oidcIssuer": "https://github.com/login/oauth",
+                        "subjectEmail": "test-user@example.com"
+                    },
+                    "rekorPublicKeyPath": "/path/to/rekor.pub",
+                    "signedIdentity": { "type": "matchRepository" }
+                }
+            ]
+              /* Other docker: images use the global default policy and are rejected */
         },
         "dir": {
             "": [{"type": "insecureAcceptAnything"}] /* Allow any images originating in local directories */
@@ -301,7 +500,7 @@ selectively allow individual transports and scopes as desired.
                     "signedIdentity": {
                         "type": "remapIdentity",
                         "prefix": "private-mirror:5000/vendor-mirror",
-                        "signedPrefix": "vendor.example.com",
+                        "signedPrefix": "vendor.example.com"
                     }
                 }
             ]

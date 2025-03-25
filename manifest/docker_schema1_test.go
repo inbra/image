@@ -1,15 +1,47 @@
 package manifest
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/containers/image/v5/pkg/compression"
 	"github.com/containers/image/v5/types"
+	"github.com/opencontainers/go-digest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// DiffID values corresponding to layers of schema2-to-schema1-by-docker.json
+var schema1FixtureLayerDiffIDs = []digest.Digest{
+	"sha256:142a601d97936307e75220c35dde0348971a9584c21e7cb42e1f7004005432ab",
+	"sha256:90fcc66ad3be9f1757f954b750deb37032f208428aa12599fcb02182b9065a9c",
+	"sha256:5a8624bb7e76d1e6829f9c64c43185e02bc07f97a2189eb048609a8914e72c56",
+	"sha256:d349ff6b3afc6a2800054768c82bfbf4289c9aa5da55c1290f802943dcd4d1e9",
+	"sha256:8c064bb1f60e84fa8cc6079b6d2e76e0423389fd6aeb7e497dfdae5e05b2b25b",
+}
+
+// assertJSONEqualsFixture tests that jsonBytes is structurally equal to fixture,
+// possibly ignoring ignoreFields
+func assertJSONEqualsFixture(t *testing.T, jsonBytes []byte, fixture string, ignoreFields ...string) {
+	var contents map[string]any
+	err := json.Unmarshal(jsonBytes, &contents)
+	require.NoError(t, err)
+
+	fixtureBytes, err := os.ReadFile(filepath.Join("fixtures", fixture))
+	require.NoError(t, err)
+	var fixtureContents map[string]any
+
+	err = json.Unmarshal(fixtureBytes, &fixtureContents)
+	require.NoError(t, err)
+	for _, f := range ignoreFields {
+		delete(contents, f)
+		delete(fixtureContents, f)
+	}
+	assert.Equal(t, fixtureContents, contents)
+}
 
 func manifestSchema1FromFixture(t *testing.T, fixture string) *Schema1 {
 	manifest, err := os.ReadFile(filepath.Join("fixtures", fixture))
@@ -44,6 +76,13 @@ func TestSchema1FromManifest(t *testing.T) {
 	})
 	// Extra fields are rejected
 	testValidManifestWithExtraFieldsIsRejected(t, parser, validManifest, []string{"config", "layers", "manifests"})
+}
+
+func TestSchema1Clone(t *testing.T) {
+	// This fixture should be kept updated to have all known fields set to non-empty values
+	m := manifestSchema1FromFixture(t, "v2s1.everything.json")
+	clone := Schema1Clone(m)
+	assert.Equal(t, m, clone)
 }
 
 func TestSchema1Initialize(t *testing.T) {
@@ -165,4 +204,166 @@ func TestSchema1LayerInfos(t *testing.T) {
 		{BlobInfo: types.BlobInfo{Digest: "sha256:a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4", Size: -1}, EmptyLayer: true},
 		{BlobInfo: types.BlobInfo{Digest: "sha256:a3ed95caeb02ffe68cdd9fd84406680ae93d633cb16422d00e8a7c22955b46d4", Size: -1}, EmptyLayer: true},
 	}, m.LayerInfos())
+}
+
+func TestSchema1UpdateLayerInfos(t *testing.T) {
+	for _, c := range []struct {
+		name            string
+		sourceFixture   string
+		updates         []types.BlobInfo
+		expectedFixture string // or "" to indicate an expected failure
+	}{
+		{
+			name:          "gzip → uncompressed",
+			sourceFixture: "v2s1.manifest.json",
+			updates: []types.BlobInfo{
+				{
+					Digest:               "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+					Size:                 32654,
+					CompressionOperation: types.Decompress,
+				},
+				{
+					Digest:               "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+					Size:                 16724,
+					CompressionOperation: types.Decompress,
+				},
+				{
+					Digest:               "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+					Size:                 73109,
+					CompressionOperation: types.Decompress,
+				},
+			},
+			expectedFixture: "v2s1.manifest.json", // MIME type is not stored, and we didn’t change the digests in this test, so we should not see any changes.
+		},
+		{
+			name:          "uncompressed → gzip",
+			sourceFixture: "v2s1.manifest.json",
+			updates: []types.BlobInfo{
+				{
+					Digest:               "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+					Size:                 32654,
+					CompressionOperation: types.Compress,
+					CompressionAlgorithm: &compression.Gzip,
+				},
+				{
+					Digest:               "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+					Size:                 16724,
+					CompressionOperation: types.Compress,
+					CompressionAlgorithm: &compression.Gzip,
+				},
+				{
+					Digest:               "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef",
+					Size:                 73109,
+					CompressionOperation: types.Compress,
+					CompressionAlgorithm: &compression.Gzip,
+				},
+			},
+			expectedFixture: "v2s1.manifest.json", // MIME type is not stored, and we didn’t change the digests in this test, so we should not see any changes.
+		},
+		{
+			name:          "gzip → zstd",
+			sourceFixture: "v2s1.manifest.json",
+			updates: []types.BlobInfo{
+				{
+					Digest:               "sha256:e692418e4cbaf90ca69d05a66403747baa33ee08806650b51fab815ad7fc331f",
+					Size:                 32654,
+					CompressionOperation: types.Compress,
+					CompressionAlgorithm: &compression.Zstd,
+				},
+				{
+					Digest:               "sha256:3c3a4604a545cdc127456d94e421cd355bca5b528f4a9c1905b15da2eb4a4c6b",
+					Size:                 16724,
+					CompressionOperation: types.Compress,
+					CompressionAlgorithm: &compression.Zstd,
+				},
+				{
+					Digest:               "sha256:ec4b8955958665577945c89419d1af06b5f7636b4ac3da7f12184802ad867736",
+					Size:                 73109,
+					CompressionOperation: types.Compress,
+					CompressionAlgorithm: &compression.Zstd,
+				},
+			},
+			expectedFixture: "", // zstd is not supported for docker images
+		},
+		{
+			name:          "uncompressed → gzip encrypted",
+			sourceFixture: "v2s1.manifest.json",
+			updates: []types.BlobInfo{
+				{
+					Digest:               "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+					Size:                 32654,
+					Annotations:          map[string]string{"org.opencontainers.image.enc.…": "layer1"},
+					CompressionOperation: types.Compress,
+					CompressionAlgorithm: &compression.Gzip,
+					CryptoOperation:      types.Encrypt,
+				},
+				{
+					Digest:               "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+					Size:                 16724,
+					Annotations:          map[string]string{"org.opencontainers.image.enc.…": "layer2"},
+					CompressionOperation: types.Compress,
+					CompressionAlgorithm: &compression.Gzip,
+					CryptoOperation:      types.Encrypt,
+				},
+				{
+					Digest:               "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+					Size:                 73109,
+					Annotations:          map[string]string{"org.opencontainers.image.enc.…": "layer2"},
+					CompressionOperation: types.Compress,
+					CompressionAlgorithm: &compression.Gzip,
+					CryptoOperation:      types.Encrypt,
+				},
+			},
+			expectedFixture: "", // Encryption is not supported
+		},
+		{
+			name:          "gzip  → uncompressed decrypted", // We can’t represent encrypted images anyway, but verify that we reject decryption attempts.
+			sourceFixture: "v2s1.manifest.json",
+			updates: []types.BlobInfo{
+				{
+					Digest:               "sha256:e692418e4cbaf90ca69d05a66403747baa33ee08806650b51fab815ad7fc331f",
+					Size:                 32654,
+					CompressionOperation: types.Decompress,
+					CryptoOperation:      types.Decrypt,
+				},
+				{
+					Digest:               "sha256:3c3a4604a545cdc127456d94e421cd355bca5b528f4a9c1905b15da2eb4a4c6b",
+					Size:                 16724,
+					CompressionOperation: types.Decompress,
+					CryptoOperation:      types.Decrypt,
+				},
+				{
+					Digest:               "sha256:ec4b8955958665577945c89419d1af06b5f7636b4ac3da7f12184802ad867736",
+					Size:                 73109,
+					CompressionOperation: types.Decompress,
+					CryptoOperation:      types.Decrypt,
+				},
+			},
+			expectedFixture: "", // Decryption is not supported
+		},
+	} {
+		manifest := manifestSchema1FromFixture(t, c.sourceFixture)
+
+		err := manifest.UpdateLayerInfos(c.updates)
+		if c.expectedFixture == "" {
+			assert.Error(t, err, c.name)
+		} else {
+			require.NoError(t, err, c.name)
+
+			updatedManifestBytes, err := manifest.Serialize()
+			require.NoError(t, err, c.name)
+
+			// Drop "signatures" which is generated by AddDummyV2S1Signature
+			assertJSONEqualsFixture(t, updatedManifestBytes, c.expectedFixture, "signatures")
+		}
+	}
+}
+
+func TestSchema1ImageID(t *testing.T) {
+	m := manifestSchema1FromFixture(t, "schema2-to-schema1-by-docker.json")
+	id, err := m.ImageID(schema1FixtureLayerDiffIDs)
+	require.NoError(t, err)
+	// NOTE: This value is dependent on the Schema1.ToSchema2Config implementation, and not necessarily stable over time.
+	// This is mostly a smoke-test; it’s fine to just update this value if that implementation changes.
+	assert.Equal(t, "9ca4bda0a6b3727a6ffcc43e981cad0f24e2ec79d338f6ba325b4dfd0756fb8f", id)
 }

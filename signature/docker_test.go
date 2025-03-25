@@ -2,20 +2,12 @@ package signature
 
 import (
 	"os"
-	"os/exec"
 	"testing"
 
+	"github.com/containers/image/v5/internal/testing/gpgagent"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// Kill the running gpg-agent to drop unlocked keys. This allows for testing handling of invalid passphrases.
-func killGPGAgent(t *testing.T) {
-	cmd := exec.Command("gpgconf", "--kill", "gpg-agent")
-	cmd.Env = append(os.Environ(), "GNUPGHOME="+testGPGHomeDirectory)
-	err := cmd.Run()
-	assert.NoError(t, err)
-}
 
 func TestSignDockerManifest(t *testing.T) {
 	mech, err := newGPGSigningMechanismInDirectory(testGPGHomeDirectory)
@@ -54,7 +46,8 @@ func TestSignDockerManifest(t *testing.T) {
 }
 
 func TestSignDockerManifestWithPassphrase(t *testing.T) {
-	killGPGAgent(t)
+	err := gpgagent.KillGPGAgent(testGPGHomeDirectory)
+	require.NoError(t, err)
 
 	mech, err := newGPGSigningMechanismInDirectory(testGPGHomeDirectory)
 	require.NoError(t, err)
@@ -166,4 +159,78 @@ func TestVerifyDockerManifestSignature(t *testing.T) {
 	sig, err = VerifyDockerManifestSignature(signature, []byte("unexpected manifest"), TestImageSignatureReference, mech, TestKeyFingerprint)
 	assert.Error(t, err)
 	assert.Nil(t, sig)
+}
+
+func TestVerifyImageManifestSignatureUsingKeyIdentityList(t *testing.T) {
+	mech, err := newGPGSigningMechanismInDirectory(testGPGHomeDirectory)
+	require.NoError(t, err)
+	defer mech.Close()
+	manifest, err := os.ReadFile("fixtures/image.manifest.json")
+	require.NoError(t, err)
+	signature, err := os.ReadFile("fixtures/image.signature")
+	require.NoError(t, err)
+
+	// Successful verification
+	sig, keyIdentity, err := VerifyImageManifestSignatureUsingKeyIdentityList(signature, manifest, TestImageSignatureReference, mech, TestFingerprintListWithKey)
+	require.NoError(t, err)
+	assert.Equal(t, TestImageSignatureReference, sig.DockerReference)
+	assert.Equal(t, TestImageManifestDigest, sig.DockerManifestDigest)
+	assert.Equal(t, TestKeyFingerprint, keyIdentity)
+
+	// Verification using a different canonicalization of TestImageSignatureReference
+	sig, keyIdentity, err = VerifyImageManifestSignatureUsingKeyIdentityList(signature, manifest, "docker.io/"+TestImageSignatureReference, mech, TestFingerprintListWithKey)
+	require.NoError(t, err)
+	assert.Equal(t, TestImageSignatureReference, sig.DockerReference)
+	assert.Equal(t, TestImageManifestDigest, sig.DockerManifestDigest)
+	assert.Equal(t, TestKeyFingerprint, keyIdentity)
+
+	// For extra paranoia, test that we return nil data on error.
+
+	// Invalid docker reference on input
+	sig, keyIdentity, err = VerifyImageManifestSignatureUsingKeyIdentityList(signature, manifest, "UPPERCASEISINVALID", mech, TestFingerprintListWithKey)
+	assert.Error(t, err)
+	assert.Nil(t, sig)
+	assert.Equal(t, "", keyIdentity)
+
+	// Error computing Docker manifest
+	invalidManifest, err := os.ReadFile("fixtures/v2s1-invalid-signatures.manifest.json")
+	require.NoError(t, err)
+	sig, keyIdentity, err = VerifyImageManifestSignatureUsingKeyIdentityList(signature, invalidManifest, TestImageSignatureReference, mech, TestFingerprintListWithKey)
+	assert.Error(t, err)
+	assert.Nil(t, sig)
+	assert.Equal(t, "", keyIdentity)
+
+	// Error verifying signature
+	corruptSignature, err := os.ReadFile("fixtures/corrupt.signature")
+	require.NoError(t, err)
+	sig, keyIdentity, err = VerifyImageManifestSignatureUsingKeyIdentityList(corruptSignature, manifest, TestImageSignatureReference, mech, TestFingerprintListWithKey)
+	assert.Error(t, err)
+	assert.Nil(t, sig)
+	assert.Equal(t, "", keyIdentity)
+
+	// Key fingerprint mismatch
+	sig, keyIdentity, err = VerifyImageManifestSignatureUsingKeyIdentityList(signature, manifest, TestImageSignatureReference, mech, TestFingerprintListWithoutKey)
+	assert.Error(t, err)
+	assert.Nil(t, sig)
+	assert.Equal(t, "", keyIdentity)
+
+	// Invalid reference in the signature
+	invalidReferenceSignature, err := os.ReadFile("fixtures/invalid-reference.signature")
+	require.NoError(t, err)
+	sig, keyIdentity, err = VerifyImageManifestSignatureUsingKeyIdentityList(invalidReferenceSignature, manifest, TestImageSignatureReference, mech, TestFingerprintListWithKey)
+	assert.Error(t, err)
+	assert.Nil(t, sig)
+	assert.Equal(t, "", keyIdentity)
+
+	// Docker reference mismatch
+	sig, keyIdentity, err = VerifyImageManifestSignatureUsingKeyIdentityList(signature, manifest, "example.com/does-not/match", mech, TestFingerprintListWithKey)
+	assert.Error(t, err)
+	assert.Nil(t, sig)
+	assert.Equal(t, "", keyIdentity)
+
+	// Docker manifest digest mismatch
+	sig, keyIdentity, err = VerifyImageManifestSignatureUsingKeyIdentityList(signature, []byte("unexpected manifest"), TestImageSignatureReference, mech, TestFingerprintListWithKey)
+	assert.Error(t, err)
+	assert.Nil(t, sig)
+	assert.Equal(t, "", keyIdentity)
 }

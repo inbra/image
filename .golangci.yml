@@ -1,4 +1,16 @@
 ---
 run:
   concurrency: 6
-  deadline: 5m
+  timeout: 5m
+
+linters:
+  enable:
+    - errorlint
+
+linters-settings:
+  errorlint:
+    # See https://golangci-lint.run/usage/linters/#errorlint.
+    # Only allow warnings about not using %w.
+    errorf-multi: false
+    asserts: false
+    comparison: false

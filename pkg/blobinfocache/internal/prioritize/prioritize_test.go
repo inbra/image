@@ -2,14 +2,17 @@ package prioritize
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/containers/image/v5/internal/blobinfocache"
+	"github.com/containers/image/v5/pkg/compression"
 	compressiontypes "github.com/containers/image/v5/pkg/compression/types"
 	"github.com/containers/image/v5/types"
 	"github.com/opencontainers/go-digest"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -20,40 +23,260 @@ const (
 )
 
 var (
-	// cssLiteral contains a non-trivial candidateSortState shared among several tests below.
-	cssLiteral = candidateSortState{
-		cs: []CandidateWithTime{
-			{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedA, Location: types.BICLocationReference{Opaque: "A1"}, CompressorName: compressiontypes.XzAlgorithmName}, time.Unix(1, 0)},
-			{blobinfocache.BICReplacementCandidate2{Digest: digestUncompressed, Location: types.BICLocationReference{Opaque: "U2"}, CompressorName: compressiontypes.GzipAlgorithmName}, time.Unix(1, 1)},
-			{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedA, Location: types.BICLocationReference{Opaque: "A2"}, CompressorName: blobinfocache.Uncompressed}, time.Unix(1, 1)},
-			{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedPrimary, Location: types.BICLocationReference{Opaque: "P1"}, CompressorName: blobinfocache.UnknownCompression}, time.Unix(1, 0)},
-			{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedB, Location: types.BICLocationReference{Opaque: "B1"}, CompressorName: compressiontypes.Bzip2AlgorithmName}, time.Unix(1, 1)},
-			{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedPrimary, Location: types.BICLocationReference{Opaque: "P2"}, CompressorName: compressiontypes.GzipAlgorithmName}, time.Unix(1, 1)},
-			{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedB, Location: types.BICLocationReference{Opaque: "B2"}, CompressorName: blobinfocache.Uncompressed}, time.Unix(2, 0)},
-			{blobinfocache.BICReplacementCandidate2{Digest: digestUncompressed, Location: types.BICLocationReference{Opaque: "U1"}, CompressorName: blobinfocache.UnknownCompression}, time.Unix(1, 0)},
-		},
-		primaryDigest:      digestCompressedPrimary,
-		uncompressedDigest: digestUncompressed,
+	// inputReplacementCandidates contains a non-trivial candidateSortState shared among several tests below.
+	inputReplacementCandidates = []CandidateWithTime{
+		{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedA, Location: types.BICLocationReference{Opaque: "A1"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Xz}, time.Unix(1, 0)},
+		{blobinfocache.BICReplacementCandidate2{Digest: digestUncompressed, Location: types.BICLocationReference{Opaque: "U2"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Gzip}, time.Unix(1, 1)},
+		{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedA, Location: types.BICLocationReference{Opaque: "A2"}, CompressionOperation: types.Decompress, CompressionAlgorithm: nil}, time.Unix(1, 1)},
+		{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedPrimary, Location: types.BICLocationReference{Opaque: "P1"}}, time.Unix(1, 0)},
+		{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedB, Location: types.BICLocationReference{Opaque: "B1"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Bzip2}, time.Unix(1, 1)},
+		{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedPrimary, Location: types.BICLocationReference{Opaque: "P2"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Gzip}, time.Unix(1, 1)},
+		{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedB, Location: types.BICLocationReference{Opaque: "B2"}, CompressionOperation: types.Decompress, CompressionAlgorithm: nil}, time.Unix(2, 0)},
+		{blobinfocache.BICReplacementCandidate2{Digest: digestUncompressed, Location: types.BICLocationReference{Opaque: "U1"}}, time.Unix(1, 0)},
+		{blobinfocache.BICReplacementCandidate2{Digest: digestUncompressed, UnknownLocation: true, Location: types.BICLocationReference{Opaque: ""}}, time.Time{}},
+		{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedA, UnknownLocation: true, Location: types.BICLocationReference{Opaque: ""}}, time.Time{}},
+		{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedB, UnknownLocation: true, Location: types.BICLocationReference{Opaque: ""}}, time.Time{}},
+		{blobinfocache.BICReplacementCandidate2{Digest: digestCompressedPrimary, UnknownLocation: true, Location: types.BICLocationReference{Opaque: ""}}, time.Time{}},
 	}
-	// cssExpectedReplacementCandidates is the fully-sorted, unlimited, result of prioritizing cssLiteral.
-	cssExpectedReplacementCandidates = []blobinfocache.BICReplacementCandidate2{
-		{Digest: digestCompressedPrimary, Location: types.BICLocationReference{Opaque: "P2"}, CompressorName: compressiontypes.GzipAlgorithmName},
-		{Digest: digestCompressedPrimary, Location: types.BICLocationReference{Opaque: "P1"}, CompressorName: blobinfocache.UnknownCompression},
-		{Digest: digestCompressedB, Location: types.BICLocationReference{Opaque: "B2"}, CompressorName: blobinfocache.Uncompressed},
-		{Digest: digestCompressedA, Location: types.BICLocationReference{Opaque: "A2"}, CompressorName: blobinfocache.Uncompressed},
-		{Digest: digestCompressedB, Location: types.BICLocationReference{Opaque: "B1"}, CompressorName: compressiontypes.Bzip2AlgorithmName},
-		{Digest: digestCompressedA, Location: types.BICLocationReference{Opaque: "A1"}, CompressorName: compressiontypes.XzAlgorithmName},
-		{Digest: digestUncompressed, Location: types.BICLocationReference{Opaque: "U2"}, CompressorName: compressiontypes.GzipAlgorithmName},
-		{Digest: digestUncompressed, Location: types.BICLocationReference{Opaque: "U1"}, CompressorName: blobinfocache.UnknownCompression},
+	// expectedReplacementCandidates is the fully-sorted, unlimited, result of prioritizing inputReplacementCandidates.
+	expectedReplacementCandidates = []blobinfocache.BICReplacementCandidate2{
+		{Digest: digestCompressedPrimary, Location: types.BICLocationReference{Opaque: "P2"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Gzip},
+		{Digest: digestCompressedPrimary, Location: types.BICLocationReference{Opaque: "P1"}},
+		{Digest: digestCompressedB, Location: types.BICLocationReference{Opaque: "B2"}, CompressionOperation: types.Decompress, CompressionAlgorithm: nil},
+		{Digest: digestCompressedA, Location: types.BICLocationReference{Opaque: "A2"}, CompressionOperation: types.Decompress, CompressionAlgorithm: nil},
+		{Digest: digestCompressedB, Location: types.BICLocationReference{Opaque: "B1"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Bzip2},
+		{Digest: digestCompressedA, Location: types.BICLocationReference{Opaque: "A1"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Xz},
+		{Digest: digestUncompressed, Location: types.BICLocationReference{Opaque: "U2"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Gzip},
+		{Digest: digestUncompressed, Location: types.BICLocationReference{Opaque: "U1"}},
+		{Digest: digestCompressedPrimary, UnknownLocation: true, Location: types.BICLocationReference{Opaque: ""}},
+		{Digest: digestCompressedA, UnknownLocation: true, Location: types.BICLocationReference{Opaque: ""}},
+		{Digest: digestCompressedB, UnknownLocation: true, Location: types.BICLocationReference{Opaque: ""}},
+		{Digest: digestUncompressed, UnknownLocation: true, Location: types.BICLocationReference{Opaque: ""}},
 	}
 )
 
-func TestCandidateSortStateLen(t *testing.T) {
-	css := cssLiteral
-	assert.Equal(t, 8, css.Len())
+func TestCandidateTemplateWithCompression(t *testing.T) {
+	chunkedAnnotations := map[string]string{"a": "b"}
+	uncompressedData := blobinfocache.DigestCompressorData{
+		BaseVariantCompressor:      blobinfocache.Uncompressed,
+		SpecificVariantCompressor:  blobinfocache.UnknownCompression,
+		SpecificVariantAnnotations: nil,
+	}
+	gzipData := blobinfocache.DigestCompressorData{
+		BaseVariantCompressor:      compressiontypes.GzipAlgorithmName,
+		SpecificVariantCompressor:  blobinfocache.UnknownCompression,
+		SpecificVariantAnnotations: nil,
+	}
+	zstdData := blobinfocache.DigestCompressorData{
+		BaseVariantCompressor:      compressiontypes.ZstdAlgorithmName,
+		SpecificVariantCompressor:  blobinfocache.UnknownCompression,
+		SpecificVariantAnnotations: nil,
+	}
+	zstdChunkedData := blobinfocache.DigestCompressorData{
+		BaseVariantCompressor:      compressiontypes.ZstdAlgorithmName,
+		SpecificVariantCompressor:  compressiontypes.ZstdChunkedAlgorithmName,
+		SpecificVariantAnnotations: chunkedAnnotations,
+	}
 
-	css.cs = []CandidateWithTime{}
-	assert.Equal(t, 0, css.Len())
+	for _, c := range []struct {
+		name                string
+		requiredCompression *compressiontypes.Algorithm
+		data                blobinfocache.DigestCompressorData
+		v2Matches           bool
+		// if v2Matches:
+		v2Op          types.LayerCompression
+		v2Algo        string
+		v2Annotations map[string]string
+	}{
+		{
+			name:                "unknown",
+			requiredCompression: nil,
+			data: blobinfocache.DigestCompressorData{
+				BaseVariantCompressor:      blobinfocache.UnknownCompression,
+				SpecificVariantCompressor:  blobinfocache.UnknownCompression,
+				SpecificVariantAnnotations: nil,
+			},
+			v2Matches: false,
+		},
+		{
+			name:                "uncompressed",
+			requiredCompression: nil,
+			data:                uncompressedData,
+			v2Matches:           true,
+			v2Op:                types.Decompress,
+			v2Algo:              "",
+			v2Annotations:       nil,
+		},
+		{
+			name:                "uncompressed, want gzip",
+			requiredCompression: &compression.Gzip,
+			data:                uncompressedData,
+			v2Matches:           false,
+		},
+		{
+			name:                "gzip",
+			requiredCompression: nil,
+			data:                gzipData,
+			v2Matches:           true,
+			v2Op:                types.Compress,
+			v2Algo:              compressiontypes.GzipAlgorithmName,
+			v2Annotations:       nil,
+		},
+		{
+			name:                "gzip, want zstd",
+			requiredCompression: &compression.Zstd,
+			data:                gzipData,
+			v2Matches:           false,
+		},
+		{
+			name:                "unknown base",
+			requiredCompression: nil,
+			data: blobinfocache.DigestCompressorData{
+				BaseVariantCompressor:      "this value is unknown",
+				SpecificVariantCompressor:  blobinfocache.UnknownCompression,
+				SpecificVariantAnnotations: nil,
+			},
+			v2Matches: false,
+		},
+		{
+			name:                "zstd",
+			requiredCompression: nil,
+			data:                zstdData,
+			v2Matches:           true,
+			v2Op:                types.Compress,
+			v2Algo:              compressiontypes.ZstdAlgorithmName,
+			v2Annotations:       nil,
+		},
+		{
+			name:                "zstd, want gzip",
+			requiredCompression: &compression.Gzip,
+			data:                zstdData,
+			v2Matches:           false,
+		},
+		{
+			name:                "zstd, want zstd",
+			requiredCompression: &compression.Zstd,
+			data:                zstdData,
+			v2Matches:           true,
+			v2Op:                types.Compress,
+			v2Algo:              compressiontypes.ZstdAlgorithmName,
+			v2Annotations:       nil,
+		},
+		{
+			name:                "zstd, want zstd:chunked",
+			requiredCompression: &compression.ZstdChunked,
+			data:                zstdData,
+			v2Matches:           false,
+		},
+		{
+			name:                "zstd:chunked",
+			requiredCompression: nil,
+			data:                zstdChunkedData,
+			v2Matches:           true,
+			v2Op:                types.Compress,
+			v2Algo:              compressiontypes.ZstdChunkedAlgorithmName,
+			v2Annotations:       chunkedAnnotations,
+		},
+		{
+			name:                "zstd:chunked, want gzip",
+			requiredCompression: &compression.Gzip,
+			data:                zstdChunkedData,
+			v2Matches:           false,
+		},
+		{
+			name:                "zstd:chunked, want zstd", // Note that we return the full chunked data in this case.
+			requiredCompression: &compression.Zstd,
+			data:                zstdChunkedData,
+			v2Matches:           true,
+			v2Op:                types.Compress,
+			v2Algo:              compressiontypes.ZstdChunkedAlgorithmName,
+			v2Annotations:       chunkedAnnotations,
+		},
+		{
+			name:                "zstd:chunked, want zstd:chunked",
+			requiredCompression: &compression.ZstdChunked,
+			data:                zstdChunkedData,
+			v2Matches:           true,
+			v2Op:                types.Compress,
+			v2Algo:              compressiontypes.ZstdChunkedAlgorithmName,
+			v2Annotations:       chunkedAnnotations,
+		},
+		{
+			name:                "zstd:unknown",
+			requiredCompression: nil,
+			data: blobinfocache.DigestCompressorData{
+				BaseVariantCompressor:      compressiontypes.ZstdAlgorithmName,
+				SpecificVariantCompressor:  "this value is unknown",
+				SpecificVariantAnnotations: chunkedAnnotations,
+			},
+			v2Matches:     true,
+			v2Op:          types.Compress,
+			v2Algo:        compressiontypes.ZstdAlgorithmName,
+			v2Annotations: nil,
+		},
+	} {
+		res := CandidateTemplateWithCompression(nil, digestCompressedPrimary, c.data)
+		assert.Equal(t, &CandidateTemplate{
+			digest:                 digestCompressedPrimary,
+			compressionOperation:   types.PreserveOriginal,
+			compressionAlgorithm:   nil,
+			compressionAnnotations: nil,
+		}, res, c.name)
+
+		// These tests only use RequiredCompression in CandidateLocations2Options for clarity;
+		// CandidateCompressionMatchesReuseConditions should have its own tests of handling the full set of options.
+		res = CandidateTemplateWithCompression(&blobinfocache.CandidateLocations2Options{
+			RequiredCompression: c.requiredCompression,
+		}, digestCompressedPrimary, c.data)
+		if !c.v2Matches {
+			assert.Nil(t, res, c.name)
+		} else {
+			require.NotNil(t, res, c.name)
+			assert.Equal(t, digestCompressedPrimary, res.digest, c.name)
+			assert.Equal(t, c.v2Op, res.compressionOperation, c.name)
+			if c.v2Algo == "" {
+				assert.Nil(t, res.compressionAlgorithm, c.name)
+			} else {
+				require.NotNil(t, res.compressionAlgorithm, c.name)
+				assert.Equal(t, c.v2Algo, res.compressionAlgorithm.Name())
+			}
+			assert.Equal(t, c.v2Annotations, res.compressionAnnotations, c.name)
+		}
+	}
+}
+
+func TestCandidateWithLocation(t *testing.T) {
+	template := CandidateTemplateWithCompression(&blobinfocache.CandidateLocations2Options{}, digestCompressedPrimary, blobinfocache.DigestCompressorData{
+		BaseVariantCompressor:      compressiontypes.ZstdAlgorithmName,
+		SpecificVariantCompressor:  compressiontypes.ZstdChunkedAlgorithmName,
+		SpecificVariantAnnotations: map[string]string{"a": "b"},
+	})
+	require.NotNil(t, template)
+	loc := types.BICLocationReference{Opaque: "opaque"}
+	time := time.Now()
+	res := template.CandidateWithLocation(loc, time)
+	assert.Equal(t, digestCompressedPrimary, res.candidate.Digest)
+	assert.Equal(t, types.Compress, res.candidate.CompressionOperation)
+	assert.Equal(t, compressiontypes.ZstdChunkedAlgorithmName, res.candidate.CompressionAlgorithm.Name())
+	assert.Equal(t, map[string]string{"a": "b"}, res.candidate.CompressionAnnotations)
+	assert.Equal(t, false, res.candidate.UnknownLocation)
+	assert.Equal(t, loc, res.candidate.Location)
+	assert.Equal(t, time, res.lastSeen)
+}
+
+func TestCandidateWithUnknownLocation(t *testing.T) {
+	template := CandidateTemplateWithCompression(&blobinfocache.CandidateLocations2Options{}, digestCompressedPrimary, blobinfocache.DigestCompressorData{
+		BaseVariantCompressor:      compressiontypes.ZstdAlgorithmName,
+		SpecificVariantCompressor:  compressiontypes.ZstdChunkedAlgorithmName,
+		SpecificVariantAnnotations: map[string]string{"a": "b"},
+	})
+	require.NotNil(t, template)
+	res := template.CandidateWithUnknownLocation()
+	assert.Equal(t, digestCompressedPrimary, res.candidate.Digest)
+	assert.Equal(t, types.Compress, res.candidate.CompressionOperation)
+	assert.Equal(t, compressiontypes.ZstdChunkedAlgorithmName, res.candidate.CompressionAlgorithm.Name())
+	assert.Equal(t, map[string]string{"a": "b"}, res.candidate.CompressionAnnotations)
+	assert.Equal(t, true, res.candidate.UnknownLocation)
 }
 
 func TestCandidateSortStateLess(t *testing.T) {
@@ -74,25 +297,23 @@ func TestCandidateSortStateLess(t *testing.T) {
 	} {
 		for _, tms := range [][2]int64{{1, 2}, {2, 1}, {1, 1}} {
 			caseName := fmt.Sprintf("%s %v", c.name, tms)
+			c0 := CandidateWithTime{blobinfocache.BICReplacementCandidate2{Digest: c.d0, Location: types.BICLocationReference{Opaque: "L0"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Gzip}, time.Unix(tms[0], 0)}
+			c1 := CandidateWithTime{blobinfocache.BICReplacementCandidate2{Digest: c.d1, Location: types.BICLocationReference{Opaque: "L1"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Zstd}, time.Unix(tms[1], 0)}
 			css := candidateSortState{
-				cs: []CandidateWithTime{
-					{blobinfocache.BICReplacementCandidate2{Digest: c.d0, Location: types.BICLocationReference{Opaque: "L0"}, CompressorName: compressiontypes.GzipAlgorithmName}, time.Unix(tms[0], 0)},
-					{blobinfocache.BICReplacementCandidate2{Digest: c.d1, Location: types.BICLocationReference{Opaque: "L1"}, CompressorName: compressiontypes.ZstdAlgorithmName}, time.Unix(tms[1], 0)},
-				},
 				primaryDigest:      digestCompressedPrimary,
 				uncompressedDigest: digestUncompressed,
 			}
-			assert.Equal(t, c.res < 0, css.Less(0, 1), caseName)
-			assert.Equal(t, c.res > 0, css.Less(1, 0), caseName)
+			assert.Equal(t, c.res, css.compare(c0, c1), caseName)
+			assert.Equal(t, -c.res, css.compare(c1, c0), caseName)
 
 			if c.d0 != digestUncompressed && c.d1 != digestUncompressed {
 				css.uncompressedDigest = ""
-				assert.Equal(t, c.res < 0, css.Less(0, 1), caseName)
-				assert.Equal(t, c.res > 0, css.Less(1, 0), caseName)
+				assert.Equal(t, c.res, css.compare(c0, c1), caseName)
+				assert.Equal(t, -c.res, css.compare(c1, c0), caseName)
 
 				css.uncompressedDigest = css.primaryDigest
-				assert.Equal(t, c.res < 0, css.Less(0, 1), caseName)
-				assert.Equal(t, c.res > 0, css.Less(1, 0), caseName)
+				assert.Equal(t, c.res, css.compare(c0, c1), caseName)
+				assert.Equal(t, -c.res, css.compare(c1, c0), caseName)
 			}
 		}
 	}
@@ -113,60 +334,42 @@ func TestCandidateSortStateLess(t *testing.T) {
 		{"any: t=1 == t=1, d=A < d=B", -1, p{digestCompressedA, 1}, p{digestCompressedB, 1}},
 		{"any: t=1 == t=1, d=A == d=A", 0, p{digestCompressedA, 1}, p{digestCompressedA, 1}},
 	} {
+		c0 := CandidateWithTime{blobinfocache.BICReplacementCandidate2{Digest: c.p0.d, Location: types.BICLocationReference{Opaque: "L0"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Gzip}, time.Unix(c.p0.t, 0)}
+		c1 := CandidateWithTime{blobinfocache.BICReplacementCandidate2{Digest: c.p1.d, Location: types.BICLocationReference{Opaque: "L1"}, CompressionOperation: types.Compress, CompressionAlgorithm: &compression.Zstd}, time.Unix(c.p1.t, 0)}
 		css := candidateSortState{
-			cs: []CandidateWithTime{
-				{blobinfocache.BICReplacementCandidate2{Digest: c.p0.d, Location: types.BICLocationReference{Opaque: "L0"}, CompressorName: compressiontypes.GzipAlgorithmName}, time.Unix(c.p0.t, 0)},
-				{blobinfocache.BICReplacementCandidate2{Digest: c.p1.d, Location: types.BICLocationReference{Opaque: "L1"}, CompressorName: compressiontypes.ZstdAlgorithmName}, time.Unix(c.p1.t, 0)},
-			},
 			primaryDigest:      digestCompressedPrimary,
 			uncompressedDigest: digestUncompressed,
 		}
-		assert.Equal(t, c.res < 0, css.Less(0, 1), c.name)
-		assert.Equal(t, c.res > 0, css.Less(1, 0), c.name)
+		assert.Equal(t, c.res, css.compare(c0, c1), c.name)
+		assert.Equal(t, -c.res, css.compare(c1, c0), c.name)
 
 		if c.p0.d != digestUncompressed && c.p1.d != digestUncompressed {
 			css.uncompressedDigest = ""
-			assert.Equal(t, c.res < 0, css.Less(0, 1), c.name)
-			assert.Equal(t, c.res > 0, css.Less(1, 0), c.name)
+			assert.Equal(t, c.res, css.compare(c0, c1), c.name)
+			assert.Equal(t, -c.res, css.compare(c1, c0), c.name)
 
 			css.uncompressedDigest = css.primaryDigest
-			assert.Equal(t, c.res < 0, css.Less(0, 1), c.name)
-			assert.Equal(t, c.res > 0, css.Less(1, 0), c.name)
+			assert.Equal(t, c.res, css.compare(c0, c1), c.name)
+			assert.Equal(t, -c.res, css.compare(c1, c0), c.name)
 		}
 	}
-}
-
-func TestCandidateSortStateSwap(t *testing.T) {
-	freshCSS := func() candidateSortState { // Return a deep copy of cssLiteral which is safe to modify.
-		res := cssLiteral
-		res.cs = append([]CandidateWithTime{}, cssLiteral.cs...)
-		return res
-	}
-
-	css := freshCSS()
-	css.Swap(0, 1)
-	assert.Equal(t, cssLiteral.cs[1], css.cs[0])
-	assert.Equal(t, cssLiteral.cs[0], css.cs[1])
-	assert.Equal(t, cssLiteral.cs[2], css.cs[2])
-
-	css = freshCSS()
-	css.Swap(1, 1)
-	assert.Equal(t, cssLiteral, css)
 }
 
 func TestDestructivelyPrioritizeReplacementCandidatesWithMax(t *testing.T) {
-	for _, max := range []int{0, 1, replacementAttempts, 100} {
-		// Just a smoke test; we mostly rely on test coverage in TestCandidateSortStateLess
-		res := destructivelyPrioritizeReplacementCandidatesWithMax(append([]CandidateWithTime{}, cssLiteral.cs...), digestCompressedPrimary, digestUncompressed, max)
-		if max > len(cssExpectedReplacementCandidates) {
-			max = len(cssExpectedReplacementCandidates)
+	totalUnknownLocationCandidates := 4
+	for _, totalLimit := range []int{0, 1, replacementAttempts, 100, replacementUnknownLocationAttempts} {
+		for _, noLocationLimit := range []int{0, 1, replacementAttempts, 100, replacementUnknownLocationAttempts} {
+			totalKnownLocationCandidates := len(expectedReplacementCandidates) - totalUnknownLocationCandidates
+			allowedUnknown := min(noLocationLimit, totalUnknownLocationCandidates)
+			expectedLen := min(totalKnownLocationCandidates+allowedUnknown, totalLimit)
+			res := destructivelyPrioritizeReplacementCandidatesWithMax(slices.Clone(inputReplacementCandidates), digestCompressedPrimary, digestUncompressed, totalLimit, noLocationLimit)
+			assert.Equal(t, expectedReplacementCandidates[:expectedLen], res)
 		}
-		assert.Equal(t, cssExpectedReplacementCandidates[:max], res)
 	}
 }
 
 func TestDestructivelyPrioritizeReplacementCandidates(t *testing.T) {
 	// Just a smoke test; we mostly rely on test coverage in TestCandidateSortStateLess
-	res := DestructivelyPrioritizeReplacementCandidates(append([]CandidateWithTime{}, cssLiteral.cs...), digestCompressedPrimary, digestUncompressed)
-	assert.Equal(t, cssExpectedReplacementCandidates[:replacementAttempts], res)
+	res := DestructivelyPrioritizeReplacementCandidates(slices.Clone(inputReplacementCandidates), digestCompressedPrimary, digestUncompressed)
+	assert.Equal(t, expectedReplacementCandidates[:replacementAttempts], res)
 }

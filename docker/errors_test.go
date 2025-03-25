@@ -3,12 +3,11 @@ package docker
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"net/http"
 	"testing"
 
 	"github.com/docker/distribution/registry/api/errcode"
-	"github.com/docker/distribution/registry/client"
+	v2 "github.com/docker/distribution/registry/api/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,12 +16,16 @@ import (
 // NOR the error texts are an API commitment subject to API stability expectations;
 // they can change at any time for any reason.
 func TestRegistryHTTPResponseToError(t *testing.T) {
+	var unwrappedUnexpectedHTTPResponseError *unexpectedHTTPResponseError
+	var unwrappedErrcodeError errcode.Error
 	for _, c := range []struct {
 		name              string
 		response          string
 		errorString       string
-		errorType         interface{} // A value of the same type as the expected error, or nil
-		unwrappedErrorPtr interface{} // A pointer to a value expected to be reachable using errors.As, or nil
+		errorType         any                           // A value of the same type as the expected error, or nil
+		unwrappedErrorPtr any                           // A pointer to a value expected to be reachable using errors.As, or nil
+		errorCode         *errcode.ErrorCode            // A matching ErrorCode, or nil
+		fn                func(t *testing.T, err error) // A more specialized test, or nil
 	}{
 		{
 			name: "HTTP status out of registry error range",
@@ -31,7 +34,11 @@ func TestRegistryHTTPResponseToError(t *testing.T) {
 				"\r\n" +
 				"Body of the request\r\n",
 			errorString: "received unexpected HTTP status: 333 HTTP status out of range",
-			errorType:   &client.UnexpectedHTTPStatusError{},
+			errorType:   UnexpectedHTTPStatusError{},
+			fn: func(t *testing.T, err error) {
+				expected := err.(UnexpectedHTTPStatusError)
+				assert.Equal(t, 333, expected.StatusCode)
+			},
 		},
 		{
 			name: "HTTP body not in expected format",
@@ -39,9 +46,9 @@ func TestRegistryHTTPResponseToError(t *testing.T) {
 				"Header1: Value1\r\n" +
 				"\r\n" +
 				"<html><body>JSON? What JSON?</body></html>\r\n",
-			errorString:       "StatusCode: 400, <html><body>JSON? What JSON?</body></html>\r\n",
+			errorString:       `StatusCode: 400, "<html><body>JSON? What JSON?</body></html>\r\n"`,
 			errorType:         nil,
-			unwrappedErrorPtr: nil,
+			unwrappedErrorPtr: &unwrappedUnexpectedHTTPResponseError,
 		},
 		{
 			name: "401 body not in expected format",
@@ -49,9 +56,10 @@ func TestRegistryHTTPResponseToError(t *testing.T) {
 				"Header1: Value1\r\n" +
 				"\r\n" +
 				"<html><body>JSON? What JSON?</body></html>\r\n",
-			errorString:       "unauthorized: authentication required",
-			errorType:         errcode.Error{},
-			unwrappedErrorPtr: nil,
+			errorString:       "authentication required",
+			errorType:         nil,
+			unwrappedErrorPtr: &unwrappedErrcodeError,
+			errorCode:         &errcode.ErrorCodeUnauthorized,
 		},
 		{ // docker.io when an image is not found
 			name: "GET https://registry-1.docker.io/v2/library/this-does-not-exist/manifests/latest",
@@ -65,9 +73,10 @@ func TestRegistryHTTPResponseToError(t *testing.T) {
 				"Www-Authenticate: Bearer realm=\"https://auth.docker.io/token\",service=\"registry.docker.io\",scope=\"repository:library/this-does-not-exist:pull\",error=\"insufficient_scope\"\r\n" +
 				"\r\n" +
 				"{\"errors\":[{\"code\":\"UNAUTHORIZED\",\"message\":\"authentication required\",\"detail\":[{\"Type\":\"repository\",\"Class\":\"\",\"Name\":\"library/this-does-not-exist\",\"Action\":\"pull\"}]}]}\n",
-			errorString:       "errors:\ndenied: requested access to the resource is denied\nunauthorized: authentication required\n",
-			errorType:         errcode.Errors{},
-			unwrappedErrorPtr: nil,
+			errorString:       "requested access to the resource is denied",
+			errorType:         nil,
+			unwrappedErrorPtr: &unwrappedErrcodeError,
+			errorCode:         &errcode.ErrorCodeDenied,
 		},
 		{ // docker.io when a tag is not found
 			name: "GET https://registry-1.docker.io/v2/library/busybox/manifests/this-does-not-exist",
@@ -82,28 +91,119 @@ func TestRegistryHTTPResponseToError(t *testing.T) {
 				"Strict-Transport-Security: max-age=31536000\r\n" +
 				"\r\n" +
 				"{\"errors\":[{\"code\":\"MANIFEST_UNKNOWN\",\"message\":\"manifest unknown\",\"detail\":{\"Tag\":\"this-does-not-exist\"}}]}\n",
-			errorString:       "manifest unknown: manifest unknown",
-			errorType:         errcode.Errors{},
-			unwrappedErrorPtr: nil,
+			errorString:       "manifest unknown",
+			errorType:         nil,
+			unwrappedErrorPtr: &unwrappedErrcodeError,
+			errorCode:         &v2.ErrorCodeManifestUnknown,
 		},
 		{ // public.ecr.aws does not implement tag list
 			name: "GET https://public.ecr.aws/v2/nginx/nginx/tags/list",
 			response: "HTTP/1.1 404 Not Found\r\n" +
 				"Connection: close\r\n" +
-				"Content-Length: 19\r\n" +
-				"Content-Type: text/plain; charset=utf-8\r\n" +
-				"Date: Thu, 12 Aug 2021 19:54:58 GMT\r\n" +
+				"Content-Length: 65\r\n" +
+				"Content-Type: application/json; charset=utf-8\r\n" +
+				"Date: Tue, 06 Sep 2022 21:19:02 GMT\r\n" +
 				"Docker-Distribution-Api-Version: registry/2.0\r\n" +
-				"X-Content-Type-Options: nosniff\r\n" +
 				"\r\n" +
-				"404 page not found\n",
-			errorString:       "StatusCode: 404, 404 page not found\n",
+				"{\"errors\":[{\"code\":\"NOT_FOUND\",\"message\":\"404 page not found\"}]}\r\n",
+			errorString:       "unknown: 404 page not found",
 			errorType:         nil,
-			unwrappedErrorPtr: nil,
+			unwrappedErrorPtr: &unwrappedErrcodeError,
+			errorCode:         &errcode.ErrorCodeUnknown,
+			fn: func(t *testing.T, err error) {
+				var e errcode.Error
+				require.ErrorAs(t, err, &e)
+				// Note: (skopeo inspect) is checking for this errcode.Error value
+				assert.Equal(t, errcode.Error{
+					Code:    errcode.ErrorCodeUnknown, // The NOT_FOUND value is not defined, and turns into Unknown
+					Message: "404 page not found",
+					Detail:  nil,
+				}, e)
+			},
+		},
+		{ // registry.redhat.io is not compliant, variant 1: invalid "code" value
+			name: "registry.redhat.io/v2/this-does-not-exist/manifests/latest",
+			response: "HTTP/1.1 404 Not Found\r\n" +
+				"Connection: close\r\n" +
+				"Content-Length: 53\r\n" +
+				"Cache-Control: max-age=0, no-cache, no-store\r\n" +
+				"Content-Type: application/json\r\n" +
+				"Date: Thu, 13 Oct 2022 18:15:15 GMT\r\n" +
+				"Expires: Thu, 13 Oct 2022 18:15:15 GMT\r\n" +
+				"Pragma: no-cache\r\n" +
+				"Server: Apache\r\n" +
+				"Strict-Transport-Security: max-age=63072000; includeSubdomains; preload\r\n" +
+				"X-Hostname: crane-tbr06.cran-001.prod.iad2.dc.redhat.com\r\n" +
+				"\r\n" +
+				"{\"errors\": [{\"code\": \"404\", \"message\": \"Not Found\"}]}\r\n",
+			errorString:       "unknown: Not Found",
+			errorType:         errcode.Error{},
+			unwrappedErrorPtr: &unwrappedErrcodeError,
+			errorCode:         &errcode.ErrorCodeUnknown,
+			fn: func(t *testing.T, err error) {
+				var e errcode.Error
+				require.ErrorAs(t, err, &e)
+				// isManifestUnknownError is checking for this
+				assert.Equal(t, errcode.Error{
+					Code:    errcode.ErrorCodeUnknown, // The 404 value is not defined, and turns into Unknown
+					Message: "Not Found",
+					Detail:  nil,
+				}, e)
+			},
+		},
+		{ // registry.redhat.io is not compliant, variant 2: a completely out-of-protocol response
+			name: "registry.redhat.io/v2/rhosp15-rhel8/openstack-cron/manifests/sha256-8df5e60c42668706ac108b59c559b9187fa2de7e4e262e2967e3e9da35d5a8d7.sig",
+			response: "HTTP/1.1 404 Not Found\r\n" +
+				"Connection: close\r\n" +
+				"Content-Length: 10\r\n" +
+				"Accept-Ranges: bytes\r\n" +
+				"Date: Thu, 13 Oct 2022 18:13:53 GMT\r\n" +
+				"Server: AkamaiNetStorage\r\n" +
+				"X-Docker-Size: -1\r\n" +
+				"\r\n" +
+				"Not found\r\n",
+			errorString:       `StatusCode: 404, "Not found\r"`,
+			errorType:         nil,
+			unwrappedErrorPtr: &unwrappedUnexpectedHTTPResponseError,
+			fn: func(t *testing.T, err error) {
+				var e *unexpectedHTTPResponseError
+				require.ErrorAs(t, err, &e)
+				// isManifestUnknownError is checking for this
+				assert.Equal(t, 404, e.StatusCode)
+				assert.Equal(t, []byte("Not found\r"), e.Response)
+			},
+		},
+		{ // Harbor v2.10.2 uses an unspecified NOT_FOUND error code
+			name: "Harbor v2.10.2 manifest not found",
+			response: "HTTP/1.1 404 Not Found\r\n" +
+				"Content-Length: 153\r\n" +
+				"Connection: keep-alive\r\n" +
+				"Content-Type: application/json; charset=utf-8\r\n" +
+				"Date: Wed, 08 May 2024 08:14:59 GMT\r\n" +
+				"Server: nginx\r\n" +
+				"Set-Cookie: sid=f617c257877837614ada2561513d6827; Path=/; HttpOnly\r\n" +
+				"X-Request-Id: 1b151fb1-c943-4190-a9ce-5156ed5e3200\r\n" +
+				"\r\n" +
+				"{\"errors\":[{\"code\":\"NOT_FOUND\",\"message\":\"artifact test/alpine:sha256-443205b0cfcc78444321d56a2fe273f06e27b2c72b5058f8d7e975997d45b015.sig not found\"}]}\n",
+			errorString:       "unknown: artifact test/alpine:sha256-443205b0cfcc78444321d56a2fe273f06e27b2c72b5058f8d7e975997d45b015.sig not found",
+			errorType:         errcode.Error{},
+			unwrappedErrorPtr: &unwrappedErrcodeError,
+			errorCode:         &errcode.ErrorCodeUnknown,
+			fn: func(t *testing.T, err error) {
+				var e errcode.Error
+				require.ErrorAs(t, err, &e)
+				// isManifestUnknownError is checking for this
+				assert.Equal(t, errcode.Error{
+					Code:    errcode.ErrorCodeUnknown, // The NOT_FOUND value is not defined, and turns into Unknown
+					Message: "artifact test/alpine:sha256-443205b0cfcc78444321d56a2fe273f06e27b2c72b5058f8d7e975997d45b015.sig not found",
+					Detail:  nil,
+				}, e)
+			},
 		},
 	} {
 		res, err := http.ReadResponse(bufio.NewReader(bytes.NewReader([]byte(c.response))), nil)
 		require.NoError(t, err, c.name)
+		defer res.Body.Close()
 
 		err = registryHTTPResponseToError(res)
 		assert.Equal(t, c.errorString, err.Error(), c.name)
@@ -111,8 +211,15 @@ func TestRegistryHTTPResponseToError(t *testing.T) {
 			assert.IsType(t, c.errorType, err, c.name)
 		}
 		if c.unwrappedErrorPtr != nil {
-			found := errors.As(err, c.unwrappedErrorPtr)
-			assert.True(t, found, c.name)
+			assert.ErrorAs(t, err, c.unwrappedErrorPtr, c.name)
+		}
+		if c.errorCode != nil {
+			var ec errcode.ErrorCoder
+			require.ErrorAs(t, err, &ec, c.name)
+			assert.Equal(t, *c.errorCode, ec.ErrorCode(), c.name)
+		}
+		if c.fn != nil {
+			c.fn(t, err)
 		}
 	}
 }

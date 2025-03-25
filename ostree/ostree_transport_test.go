@@ -28,7 +28,7 @@ func TestTransportName(t *testing.T) {
 
 // A helper to replace $TMP in a repo path with a real temporary directory
 func withTmpDir(repo string, tmpDir string) string {
-	return strings.Replace(repo, "$TMP", tmpDir, -1)
+	return strings.ReplaceAll(repo, "$TMP", tmpDir)
 }
 
 // A common list of repo suffixes to test for the various ImageReference methods.
@@ -134,7 +134,7 @@ func TestNewReference(t *testing.T) {
 		require.NoError(t, err, path)
 	}
 
-	_, err = NewReference("busybox", tmpDir+"/thisparentdoesnotexist/something")
+	_, err := NewReference("busybox", tmpDir+"/thisparentdoesnotexist/something")
 	assert.Error(t, err)
 }
 
@@ -239,8 +239,9 @@ func TestReferenceNewImage(t *testing.T) {
 func TestReferenceNewImageSource(t *testing.T) {
 	ref, err := Transport.ParseReference("busybox")
 	require.NoError(t, err)
-	_, err = ref.NewImageSource(context.Background(), nil)
+	src, err := ref.NewImageSource(context.Background(), nil)
 	require.NoError(t, err)
+	defer src.Close()
 }
 
 func TestReferenceNewImageDestination(t *testing.T) {

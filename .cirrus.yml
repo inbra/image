@@ -7,8 +7,8 @@ env:
     ####
     # Name of the ultimate destination branch for this CI run
     DEST_BRANCH: "main"
-    # CI container image tag (c/skopeo branch name)
-    SKOPEO_CI_TAG: "main"
+    # c/skopeo branch name which must work with this c/image branch
+    SKOPEO_CI_BRANCH: "main"
     # Use GO module mirror (reason unknown, travis did it this way)
     GOPROXY: https://proxy.golang.org
     # Overrides default location (/tmp/cirrus) for repo clone
@@ -29,23 +29,13 @@ env:
     # test changes made there, in a PR in this repository.
     SKOPEO_PR:
 
-    ####
-    #### Cache-image names to test with (double-quotes around names are critical)
-    ####
-    FEDORA_NAME: "fedora-36"
-    PRIOR_FEDORA_NAME: "fedora-35"
-    UBUNTU_NAME: "ubuntu-2110"
-
     # Google-cloud VM Images
-    IMAGE_SUFFIX: "c4955393725038592"
+    IMAGE_SUFFIX: "c20250324t111922z-f41f40d13"
     FEDORA_CACHE_IMAGE_NAME: "fedora-${IMAGE_SUFFIX}"
-    PRIOR_FEDORA_CACHE_IMAGE_NAME: "prior-fedora-${IMAGE_SUFFIX}"
-    UBUNTU_CACHE_IMAGE_NAME: "ubuntu-${IMAGE_SUFFIX}"
+    DEBIAN_CACHE_IMAGE_NAME: "debian-${IMAGE_SUFFIX}"
 
     # Container FQIN's (include bleeding-edge development-level container deps.)
     FEDORA_CONTAINER_FQIN: "quay.io/libpod/fedora_podman:${IMAGE_SUFFIX}"
-    PRIOR_FEDORA_CONTAINER_FQIN: "quay.io/libpod/prior-fedora_podman:${IMAGE_SUFFIX}"
-    UBUNTU_CONTAINER_FQIN: "quay.io/libpod/ubuntu_podman:${IMAGE_SUFFIX}"
     # Built along with the standard PR-based workflow in c/automation_images
     SKOPEO_CIDEV_CONTAINER_FQIN: "quay.io/libpod/skopeo_cidev:${IMAGE_SUFFIX}"
 
@@ -58,14 +48,17 @@ validate_task:
     # under Cirrus-CI, due to challenges obtaining the starting commit ID.
     # Only do validation for PRs.
     only_if: $CIRRUS_PR != ''
-    # https://cirrus-ci.org/guide/docker-builder-vm/#dockerfile-as-a-ci-environment
-    container:
-        dockerfile: .cirrus.Dockerfile
-        # golangci-lint tool requires heavy cpu/memory or gets OOM'd
-        cpu: 6
-        memory: 22
-        docker_arguments:
-            BASE_IMAGE: '${UBUNTU_CONTAINER_FQIN}'
+    gce_instance: &debian_vm
+        image_project: libpod-218412
+        zone: "us-central1-f"
+        cpu: 2
+        memory: "4Gb"
+        # Required to be 200gig, do not modify - has i/o performance impact
+        # according to gcloud CLI tool warning messages.
+        disk: 200
+        image_name: ${DEBIAN_CACHE_IMAGE_NAME}
+    env:
+        HOME: "/root"  # default unset, needed by golangci-lint.
     script: |
         git remote update
         make tools
@@ -75,15 +68,8 @@ validate_task:
 
 cross_task:
     only_if: &not_docs $CIRRUS_CHANGE_TITLE !=~ '.*CI:DOCS.*'
-    container: &std_container
-        dockerfile: .cirrus.Dockerfile
-        # golangci-lint tool requires heavy cpu/memory or gets OOM'd
-        cpu: 2
-        memory: 4
-        docker_arguments:
-            BASE_IMAGE: '${UBUNTU_CONTAINER_FQIN}'
-    script: |
-        make cross
+    gce_instance: *debian_vm
+    script: make cross
 
 
 test_task:
@@ -91,17 +77,15 @@ test_task:
     depends_on:
         - validate
     only_if: *not_docs
-    container: *std_container
+    gce_instance: *debian_vm
     matrix:
         - name: "Test"
           env:
-              BUILDTAGS: 'btrfs_noversion libdm_no_deferred_remove'
+              BUILDTAGS: 'btrfs_noversion'
         - name: "Test w/ opengpg"
           env:
-              BUILDTAGS: &withopengpg 'btrfs_noversion libdm_no_deferred_remove containers_image_openpgp'
-    script: |
-        make tools
-        make test BUILDTAGS="$BUILDTAGS"
+              BUILDTAGS: &withopengpg 'btrfs_noversion containers_image_openpgp'
+    script: ${GOSRC}/${SCRIPT_BASE}/runner.sh image_tests
 
 
 #####
@@ -126,7 +110,7 @@ test_skopeo_task:
     matrix:
         - name: "Skopeo Test"
           env:
-              BUILDTAGS: 'btrfs_noversion libdm_no_deferred_remove'
+              BUILDTAGS: 'btrfs_noversion'
         - name: "Skopeo Test w/ opengpg"
           env:
               BUILDTAGS: *withopengpg
@@ -153,13 +137,12 @@ meta_task:
     container: &smallcontainer
         cpu: 2
         memory: 2
-        image: quay.io/libpod/imgts:$IMAGE_SUFFIX
+        image: quay.io/libpod/imgts:latest
     env:
         # Space-separated list of images used by this repository state
-        IMGNAMES: >-
+        IMGNAMES: |
             ${FEDORA_CACHE_IMAGE_NAME}
-            ${PRIOR_FEDORA_CACHE_IMAGE_NAME}
-            ${UBUNTU_CACHE_IMAGE_NAME}
+            ${DEBIAN_CACHE_IMAGE_NAME}
         BUILDID: "${CIRRUS_BUILD_ID}"
         REPOREF: "${CIRRUS_REPO_NAME}"
         GCPJSON: ENCRYPTED[04306103eee1933f87deb8a5af6514a7e3164aa589d6079abc0451eb2360879430ed020d6e025ca64ef667138ce9d786]

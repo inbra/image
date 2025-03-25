@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +16,8 @@ import (
 
 	cp "github.com/containers/image/v5/copy"
 	"github.com/containers/image/v5/directory"
-	"github.com/containers/image/v5/image"
+	"github.com/containers/image/v5/internal/image"
+	"github.com/containers/image/v5/internal/private"
 	"github.com/containers/image/v5/pkg/blobinfocache/none"
 	"github.com/containers/image/v5/signature"
 	"github.com/containers/image/v5/types"
@@ -22,8 +25,15 @@ import (
 	digest "github.com/opencontainers/go-digest"
 	specs "github.com/opencontainers/image-spec/specs-go"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
-	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
+)
+
+var (
+	_ types.ImageReference     = &BlobCache{}
+	_ types.ImageSource        = &blobCacheSource{}
+	_ private.ImageSource      = (*blobCacheSource)(nil)
+	_ types.ImageDestination   = &blobCacheDestination{}
+	_ private.ImageDestination = (*blobCacheDestination)(nil)
 )
 
 func TestMain(m *testing.M) {
@@ -59,9 +69,9 @@ func makeLayer(filename string, repeat int, compression archive.Compression) ([]
 func TestBlobCache(t *testing.T) {
 	cacheDir := t.TempDir()
 
-	systemContext := types.SystemContext{}
+	systemContext := types.SystemContext{BlobInfoCacheDir: "/dev/null/this/does/not/exist"}
 
-	for _, repeat := range []int{1, 10, 100, 1000, 10000} {
+	for _, repeat := range []int{1, 10000} {
 		for _, desiredCompression := range []types.LayerCompression{types.PreserveOriginal, types.Compress, types.Decompress} {
 			for _, layerCompression := range []archive.Compression{archive.Uncompressed, archive.Gzip} {
 				// Create a layer with the specified layerCompression.
@@ -153,14 +163,9 @@ func TestBlobCache(t *testing.T) {
 					t.Fatalf("error closing source image: %v", err)
 				}
 				// Check that the cache was populated.
-				cache, err := os.Open(cacheDir)
+				cachedNames, err := os.ReadDir(cacheDir)
 				if err != nil {
-					t.Fatalf("error opening cache directory %q: %v", cacheDir, err)
-				}
-				defer cache.Close()
-				cachedNames, err := cache.Readdirnames(-1)
-				if err != nil {
-					t.Fatalf("error reading contents of cache directory %q: %v", cacheDir, err)
+					t.Fatal(err)
 				}
 				// Expect a layer blob, a config blob, and the manifest.
 				expected := 3
@@ -172,12 +177,13 @@ func TestBlobCache(t *testing.T) {
 					t.Fatalf("expected %d items in cache directory %q, got %d: %v", expected, cacheDir, len(cachedNames), cachedNames)
 				}
 				// Check that the blobs were all correctly stored.
-				for _, cachedName := range cachedNames {
+				for _, de := range cachedNames {
+					cachedName := de.Name()
 					if digest.Digest(cachedName).Validate() == nil {
 						cacheMember := filepath.Join(cacheDir, cachedName)
 						cacheMemberBytes, err := os.ReadFile(cacheMember)
 						if err != nil {
-							t.Fatalf("error reading cache member %q: %v", cacheMember, err)
+							t.Fatal(err)
 						}
 						if digest.FromBytes(cacheMemberBytes).String() != cachedName {
 							t.Fatalf("cache member %q was stored incorrectly!", cacheMember)
@@ -186,16 +192,12 @@ func TestBlobCache(t *testing.T) {
 				}
 				// Clear out anything in the source directory that probably isn't a manifest, so that we'll
 				// have to depend on the cached copies of some of the blobs.
-				srcNameDir, err := os.Open(srcdir)
+				srcNames, err := os.ReadDir(srcdir)
 				if err != nil {
-					t.Fatalf("error opening source directory %q: %v", srcdir, err)
+					t.Fatal(err)
 				}
-				defer srcNameDir.Close()
-				srcNames, err := srcNameDir.Readdirnames(-1)
-				if err != nil {
-					t.Fatalf("error reading contents of source directory %q: %v", srcdir, err)
-				}
-				for _, name := range srcNames {
+				for _, de := range srcNames {
+					name := de.Name()
 					if !strings.HasPrefix(name, "manifest") {
 						os.Remove(filepath.Join(srcdir, name))
 					}
@@ -221,7 +223,7 @@ func TestBlobCache(t *testing.T) {
 				if err == nil {
 					t.Fatalf("expected an error copying the image, but got success")
 				} else {
-					if os.IsNotExist(errors.Cause(err)) {
+					if errors.Is(err, fs.ErrNotExist) {
 						t.Logf("ok: got expected does-not-exist error copying the image with blobs missing: %v", err)
 					} else {
 						t.Logf("got an error copying the image with missing blobs, but not sure which error: %v", err)

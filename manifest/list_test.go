@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/containers/image/v5/internal/manifest"
 	"github.com/containers/image/v5/types"
 	digest "github.com/opencontainers/go-digest"
 	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -14,10 +15,10 @@ import (
 )
 
 func pare(m List) {
-	if impl, ok := m.(*OCI1Index); ok {
+	if impl, ok := m.(*manifest.OCI1Index); ok {
 		impl.Annotations = nil
 	}
-	if impl, ok := m.(*Schema2List); ok {
+	if impl, ok := m.(*manifest.Schema2List); ok {
 		for i := range impl.Manifests {
 			impl.Manifests[i].Platform.Features = nil
 		}
@@ -113,7 +114,7 @@ func TestChooseInstance(t *testing.T) {
 			},
 		},
 	} {
-		rawManifest, err := os.ReadFile(filepath.Join("..", "image", "fixtures", manifestList.listFile))
+		rawManifest, err := os.ReadFile(filepath.Join("..", "internal", "manifest", "testdata", manifestList.listFile))
 		require.NoError(t, err)
 		list, err := ListFromBlob(rawManifest, GuessMIMEType(rawManifest))
 		require.NoError(t, err)

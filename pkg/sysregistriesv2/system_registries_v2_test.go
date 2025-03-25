@@ -12,54 +12,69 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var v1RegistriesConfEmptyTestData = []struct {
+	nonempty, hasSetField bool
+	v                     V1RegistriesConf
+}{
+	{nonempty: false, hasSetField: false, v: V1RegistriesConf{}},
+	{nonempty: false, hasSetField: true, v: V1RegistriesConf{V1TOMLConfig{Search: V1TOMLregistries{Registries: []string{}}}}},
+	{nonempty: false, hasSetField: true, v: V1RegistriesConf{V1TOMLConfig{Insecure: V1TOMLregistries{Registries: []string{}}}}},
+	{nonempty: false, hasSetField: true, v: V1RegistriesConf{V1TOMLConfig{Block: V1TOMLregistries{Registries: []string{}}}}},
+	{nonempty: true, hasSetField: true, v: V1RegistriesConf{V1TOMLConfig{Search: V1TOMLregistries{Registries: []string{"example.com"}}}}},
+	{nonempty: true, hasSetField: true, v: V1RegistriesConf{V1TOMLConfig{Insecure: V1TOMLregistries{Registries: []string{"example.com"}}}}},
+	{nonempty: true, hasSetField: true, v: V1RegistriesConf{V1TOMLConfig{Block: V1TOMLregistries{Registries: []string{"example.com"}}}}},
+}
+
 func TestV1RegistriesConfNonempty(t *testing.T) {
-	for _, c := range []V1RegistriesConf{
-		{},
-		{V1TOMLConfig: V1TOMLConfig{Search: V1TOMLregistries{Registries: []string{}}}},
-		{V1TOMLConfig: V1TOMLConfig{Insecure: V1TOMLregistries{Registries: []string{}}}},
-		{V1TOMLConfig: V1TOMLConfig{Block: V1TOMLregistries{Registries: []string{}}}},
-	} {
-		copy := c // A shallow copy
+	for _, c := range v1RegistriesConfEmptyTestData {
+		copy := c.v // A shallow copy
 		res := copy.Nonempty()
-		assert.False(t, res, c)
-		assert.Equal(t, c, copy, c) // Ensure the method did not change the original value
-	}
-	for _, c := range []V1RegistriesConf{
-		{V1TOMLConfig: V1TOMLConfig{Search: V1TOMLregistries{Registries: []string{"example.com"}}}},
-		{V1TOMLConfig: V1TOMLConfig{Insecure: V1TOMLregistries{Registries: []string{"example.com"}}}},
-		{V1TOMLConfig: V1TOMLConfig{Block: V1TOMLregistries{Registries: []string{"example.com"}}}},
-	} {
-		copy := c // A shallow copy
-		res := copy.Nonempty()
-		assert.True(t, res, c)
-		assert.Equal(t, c, copy, c) // Ensure the method did not change the original value
+		assert.Equal(t, c.nonempty, res, c.v)
+		assert.Equal(t, c.v, copy, c.v) // Ensure the method did not change the original value
 	}
 }
 
-func TestV2RegistriesConfNonempty(t *testing.T) {
-	for _, c := range []V2RegistriesConf{
-		{},
-		{Registries: []Registry{}},
-		{UnqualifiedSearchRegistries: []string{}},
-		{CredentialHelpers: []string{}},
-		{shortNameAliasConf: shortNameAliasConf{Aliases: map[string]string{}}},
-	} {
-		copy := c // A shallow copy
-		res := copy.Nonempty()
-		assert.False(t, res, c)
-		assert.Equal(t, c, copy, c) // Ensure the method did not change the original value
+func TestV1RegistriesConfHasSetField(t *testing.T) {
+	for _, c := range v1RegistriesConfEmptyTestData {
+		copy := c.v // A shallow copy
+		res := copy.hasSetField()
+		assert.Equal(t, c.hasSetField, res, c.v)
+		assert.Equal(t, c.v, copy, c.v) // Ensure the method did not change the original value
 	}
-	for _, c := range []V2RegistriesConf{
-		{Registries: []Registry{{Prefix: "example.com"}}},
-		{UnqualifiedSearchRegistries: []string{"example.com"}},
-		{CredentialHelpers: []string{"a"}},
-		{ShortNameMode: "enforcing"},
-		{shortNameAliasConf: shortNameAliasConf{Aliases: map[string]string{"a": "example.com/b"}}},
-	} {
-		copy := c // A shallow copy
+}
+
+var v2RegistriesConfEmptyTestData = []struct {
+	nonempty, hasSetField bool
+	v                     V2RegistriesConf
+}{
+	{nonempty: false, hasSetField: false, v: V2RegistriesConf{}},
+	{nonempty: false, hasSetField: true, v: V2RegistriesConf{Registries: []Registry{}}},
+	{nonempty: false, hasSetField: true, v: V2RegistriesConf{UnqualifiedSearchRegistries: []string{}}},
+	{nonempty: false, hasSetField: true, v: V2RegistriesConf{CredentialHelpers: []string{}}},
+	{nonempty: false, hasSetField: true, v: V2RegistriesConf{shortNameAliasConf: shortNameAliasConf{Aliases: map[string]string{}}}},
+	{nonempty: true, hasSetField: true, v: V2RegistriesConf{Registries: []Registry{{Prefix: "example.com"}}}},
+	{nonempty: true, hasSetField: true, v: V2RegistriesConf{UnqualifiedSearchRegistries: []string{"example.com"}}},
+	{nonempty: true, hasSetField: true, v: V2RegistriesConf{CredentialHelpers: []string{"a"}}},
+	{nonempty: true, hasSetField: true, v: V2RegistriesConf{ShortNameMode: "enforcing"}},
+	{nonempty: true, hasSetField: true, v: V2RegistriesConf{shortNameAliasConf: shortNameAliasConf{Aliases: map[string]string{"a": "example.com/b"}}}},
+	{nonempty: true, hasSetField: true, v: V2RegistriesConf{AdditionalLayerStoreAuthHelper: "example"}},
+}
+
+func TestV2RegistriesConfNonempty(t *testing.T) {
+	for _, c := range v2RegistriesConfEmptyTestData {
+		copy := c.v // A shallow copy
 		res := copy.Nonempty()
-		assert.True(t, res, c)
-		assert.Equal(t, c, copy, c) // Ensure the method did not change the original value
+		assert.Equal(t, c.nonempty, res, c.v)
+		assert.Equal(t, c.v, copy, c.v) // Ensure the method did not change the original value
+	}
+}
+
+func TestV2RegistriesConfHasSetField(t *testing.T) {
+	for _, c := range v2RegistriesConfEmptyTestData {
+		copy := c.v // A shallow copy
+		res := copy.hasSetField()
+		assert.Equal(t, c.hasSetField, res, c.v)
+		assert.Equal(t, c.v, copy, c.v) // Ensure the method did not change the original value
 	}
 }
 
@@ -475,11 +490,16 @@ func TestV1BackwardsCompatibility(t *testing.T) {
 }
 
 func TestMixingV1andV2(t *testing.T) {
-	_, err := GetRegistries(&types.SystemContext{
-		SystemRegistriesConfPath:    "testdata/mixing-v1-v2.conf",
-		SystemRegistriesConfDirPath: "testdata/this-does-not-exist",
-	})
-	assert.ErrorContains(t, err, "mixing sysregistry v1/v2 is not supported")
+	for _, c := range []string{
+		"testdata/mixing-v1-v2.conf",
+		"testdata/mixing-v1-v2-empty.conf",
+	} {
+		_, err := GetRegistries(&types.SystemContext{
+			SystemRegistriesConfPath:    c,
+			SystemRegistriesConfDirPath: "testdata/this-does-not-exist",
+		})
+		assert.ErrorContains(t, err, "mixing sysregistry v1/v2 is not supported", c)
+	}
 }
 
 func TestConfigCache(t *testing.T) {
@@ -608,10 +628,10 @@ func TestRewriteReferenceFailedDuringParseNamed(t *testing.T) {
 		{"example.com/foo/image:latest", "example.com//foo", "example.com/path"},
 		{"example.com/image:latest", "image", "anotherimage"},
 		{"example.com/foo/image:latest", "example.com/foo/", "example.com"},
-		{"example.com/foo/image", "example.com/fo", "example.com/foo"},
-		{"example.com/foo:latest", "example.com/fo", "example.com/foo"},
+		{"example.com/foo/image", "example.com/f", "example.com/foo"},
+		{"example.com/foo:latest", "example.com/f", "example.com/foo"},
 		{"example.com/foo@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-			"example.com/fo", "example.com/foo"},
+			"example.com/f", "example.com/foo"},
 		{"docker.io/library/image", "example.com", "example.com"},
 		{"docker.io/library/image", "*.com", "example.com"},
 		{"foo.docker.io/library/image", "*.example.com", "example.com/image"},
@@ -631,124 +651,125 @@ func TestPullSourcesFromReference(t *testing.T) {
 		SystemRegistriesConfDirPath: "testdata/this-does-not-exist",
 	}
 	registries, err := GetRegistries(sys)
-	assert.Nil(t, err)
-	assert.Equal(t, 2, len(registries))
-
-	// Registry A allowing any kind of pull from mirrors
-	registryA, err := FindRegistry(sys, "registry-a.com/foo/image:latest")
-	assert.Nil(t, err)
-	assert.NotNil(t, registryA)
-	// Digest
-	referenceADigest := toNamedRef(t, "registry-a.com/foo/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	pullSources, err := registryA.PullSourcesFromReference(referenceADigest)
-	assert.Nil(t, err)
-	assert.Equal(t, 3, len(pullSources))
-	assert.Equal(t, "mirror-1.registry-a.com/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", pullSources[0].Reference.String())
-	assert.True(t, pullSources[1].Endpoint.Insecure)
-	// Tag
-	referenceATag := toNamedRef(t, "registry-a.com/foo/image:aaa")
-	pullSources, err = registryA.PullSourcesFromReference(referenceATag)
-	assert.Nil(t, err)
-	assert.Equal(t, 3, len(pullSources))
-	assert.Equal(t, "registry-a.com/bar/image:aaa", pullSources[2].Reference.String())
-
-	// Registry B allowing digests pull only from mirrors
-	registryB, err := FindRegistry(sys, "registry-b.com/foo/image:latest")
-	assert.Nil(t, err)
-	assert.NotNil(t, registryB)
-	// Digest
-	referenceBDigest := toNamedRef(t, "registry-b.com/foo/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
-	pullSources, err = registryB.PullSourcesFromReference(referenceBDigest)
-	assert.Nil(t, err)
-	assert.Equal(t, 3, len(pullSources))
-	assert.Equal(t, "registry-b.com/bar", pullSources[2].Endpoint.Location)
-	assert.Equal(t, "registry-b.com/bar/image@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", pullSources[2].Reference.String())
-	// Tag
-	referenceBTag := toNamedRef(t, "registry-b.com/foo/image:aaa")
-	pullSources, err = registryB.PullSourcesFromReference(referenceBTag)
-	assert.Nil(t, err)
-	assert.Equal(t, 1, len(pullSources))
-}
-
-func TestPullSourcesMirrorFromReference(t *testing.T) {
-	sys := &types.SystemContext{
-		SystemRegistriesConfPath:    "testdata/pull-sources-mirror-reference.conf",
-		SystemRegistriesConfDirPath: "testdata/this-does-not-exist",
-	}
-	registries, err := GetRegistries(sys)
 	require.NoError(t, err)
-	assert.Equal(t, 7, len(registries))
+	assert.Equal(t, 9, len(registries))
 
 	digest := "@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	tag := ":aaa"
 	for _, tc := range []struct {
-		registry      string
-		digestSources []string
-		tagSources    []string
+		matchedPrefix  string
+		repo           string
+		digestPrefixes []string
+		digestInsecure []bool
+		tagPrefixes    []string
+		tagInsecure    []bool
 	}{
+		// Registry A allowing any kind of pull from mirrors
+		{
+			"registry-a.com/foo",
+			"image",
+			[]string{"mirror-1.registry-a.com", "mirror-2.registry-a.com", "registry-a.com/bar"},
+			[]bool{false, true, false},
+			[]string{"mirror-1.registry-a.com", "mirror-2.registry-a.com", "registry-a.com/bar"},
+			[]bool{false, true, false},
+		},
+		// Registry B allowing digests pull only from mirrors
+		{
+			"registry-b.com/foo",
+			"image",
+			[]string{"mirror-1.registry-b.com", "mirror-2.registry-b.com", "registry-b.com/bar"},
+			[]bool{false, false, false},
+			[]string{"registry-b.com/bar"},
+			[]bool{false},
+		},
 		// Registry A has mirrors allow any kind of pull
 		{
-			"registry-a.com/foo/image",
+			"registry-a.com/baz",
+			"image",
 			[]string{"mirror-1.registry-a.com", "mirror-2.registry-a.com", "registry-a.com/bar"},
+			[]bool{false, true, false},
 			[]string{"mirror-1.registry-a.com", "mirror-2.registry-a.com", "registry-a.com/bar"},
+			[]bool{false, true, false},
 		},
 		// Registry B has mirrors allow digests pull only
 		{
-			"registry-b.com/foo/image",
+			"registry-b.com/baz",
+			"image",
 			[]string{"mirror-1.registry-b.com", "mirror-2.registry-b.com", "registry-b.com/bar"},
+			[]bool{false, false, false},
 			[]string{"registry-b.com/bar"},
+			[]bool{false},
 		},
 		// Registry C has a mirror allows digest pull only and a mirror allows any kind of pull
 		{
-			"registry-c.com/foo/image",
+			"registry-c.com/baz",
+			"image",
 			[]string{"mirror-1.registry-c.com", "mirror-2.registry-c.com", "registry-c.com/bar"},
+			[]bool{false, false, false},
 			[]string{"mirror-1.registry-c.com", "registry-c.com/bar"},
+			[]bool{false, false},
 		},
 		// Registry D set digest-only for registry level, allows only digest pulls
 		// Registry D has no digest-only set for mirrors table
 		{
-			"registry-d.com/foo/image",
+			"registry-d.com/baz",
+			"image",
 			[]string{"mirror-1.registry-d.com", "mirror-2.registry-d.com", "registry-d.com/bar"},
+			[]bool{false, false, false},
 			[]string{"registry-d.com/bar"},
+			[]bool{false},
 		},
 		// Registry E has mirrors only allows tag pull
 		{
-			"registry-e.com/foo/image",
+			"registry-e.com/baz",
+			"image",
 			[]string{"registry-e.com/bar"},
+			[]bool{false},
 			[]string{"mirror-1.registry-e.com", "mirror-2.registry-e.com", "registry-e.com/bar"},
+			[]bool{false, false, false},
 		},
 		// Registry F has one tag only mirror does not allow digest pull
 		{
-			"registry-f.com/foo/image",
+			"registry-f.com/baz",
+			"image",
 			[]string{"mirror-1.registry-f.com", "registry-f.com/bar"},
+			[]bool{false, false},
 			[]string{"mirror-1.registry-f.com", "mirror-2.registry-f.com", "registry-f.com/bar"},
+			[]bool{false, false, false},
 		},
 		// Registry G has one digest-only pull and one tag only pull
 		{
-			"registry-g.com/foo/image",
+			"registry-g.com/baz",
+			"image",
 			[]string{"mirror-1.registry-g.com", "mirror-3.registry-g.com", "mirror-4.registry-g.com", "registry-g.com/bar"},
+			[]bool{false, false, false, false},
 			[]string{"mirror-2.registry-g.com", "mirror-3.registry-g.com", "mirror-4.registry-g.com", "registry-g.com/bar"},
+			[]bool{false, false, false, false},
 		},
 	} {
 		// Digest
-		digestedRef := toNamedRef(t, tc.registry+digest)
+		digestedRef := toNamedRef(t, fmt.Sprintf("%s/%s", tc.matchedPrefix, tc.repo)+digest)
 		registry, err := FindRegistry(sys, digestedRef.Name())
 		require.NoError(t, err)
 		require.NotNil(t, registry)
 		pullSource, err := registry.PullSourcesFromReference(digestedRef)
 		require.NoError(t, err)
-		for i, s := range tc.digestSources {
-			assert.Equal(t, s, pullSource[i].Endpoint.Location)
+		for i, p := range tc.digestPrefixes {
+			assert.Equal(t, p, pullSource[i].Endpoint.Location)
+			assert.Equal(t, fmt.Sprintf("%s/%s", p, tc.repo)+digest, pullSource[i].Reference.String())
+			assert.Equal(t, tc.digestInsecure[i], pullSource[i].Endpoint.Insecure)
 		}
 		// Tag
-		taggedRef := toNamedRef(t, tc.registry+tag)
+		taggedRef := toNamedRef(t, fmt.Sprintf("%s/%s", tc.matchedPrefix, tc.repo)+tag)
 		registry, err = FindRegistry(sys, taggedRef.Name())
 		require.NoError(t, err)
 		require.NotNil(t, registry)
 		pullSource, err = registry.PullSourcesFromReference(taggedRef)
 		require.NoError(t, err)
-		for i, s := range tc.tagSources {
-			assert.Equal(t, s, pullSource[i].Endpoint.Location)
+		for i, p := range tc.tagPrefixes {
+			assert.Equal(t, p, pullSource[i].Endpoint.Location)
+			assert.Equal(t, fmt.Sprintf("%s/%s", p, tc.repo)+tag, pullSource[i].Reference.String())
+			assert.Equal(t, tc.tagInsecure[i], pullSource[i].Endpoint.Insecure)
 		}
 	}
 }

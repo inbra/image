@@ -1,32 +1,30 @@
 package openshift
 
 import (
-	"os"
+	"encoding"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 const fixtureKubeConfigPath = "testdata/admin.kubeconfig"
 
+var (
+	_ yaml.Unmarshaler         = (*clustersMap)(nil)
+	_ yaml.Unmarshaler         = (*authInfosMap)(nil)
+	_ yaml.Unmarshaler         = (*contextsMap)(nil)
+	_ encoding.TextUnmarshaler = (*yamlBinaryAsBase64String)(nil)
+)
+
 // These are only smoke tests based on the skopeo integration test cluster. Error handling, non-trivial configuration merging,
 // and any other situations are not currently covered.
 
-// Set up KUBECONFIG to point at the fixture, and return a handler to clean it up.
+// Set up KUBECONFIG to point at the fixture.
 // Callers MUST NOT call testing.T.Parallel().
 func setupKubeConfigForSerialTest(t *testing.T) {
-	// Environment is per-process, so this looks very unsafe; actually it seems fine because tests are not
-	// run in parallel unless they opt in by calling t.Parallel().  So don’t do that.
-	oldKC, hasKC := os.LookupEnv("KUBECONFIG")
-	t.Cleanup(func() {
-		if hasKC {
-			os.Setenv("KUBECONFIG", oldKC)
-		} else {
-			os.Unsetenv("KUBECONFIG")
-		}
-	})
-	os.Setenv("KUBECONFIG", fixtureKubeConfigPath)
+	t.Setenv("KUBECONFIG", fixtureKubeConfigPath)
 }
 
 func TestClientConfigLoadingRules(t *testing.T) {

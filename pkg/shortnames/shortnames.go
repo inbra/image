@@ -1,16 +1,18 @@
 package shortnames
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/containers/image/v5/docker/reference"
+	"github.com/containers/image/v5/internal/multierr"
 	"github.com/containers/image/v5/pkg/sysregistriesv2"
 	"github.com/containers/image/v5/types"
 	"github.com/manifoldco/promptui"
 	"github.com/opencontainers/go-digest"
-	"github.com/pkg/errors"
 	"golang.org/x/term"
 )
 
@@ -20,9 +22,9 @@ import (
 // short names.
 //
 // Examples:
-//  * short names: "image:tag", "library/fedora"
-//  * not short names: "quay.io/image", "localhost/image:tag",
-//                     "server.org:5000/lib/image", "image@sha256:..."
+//   - short names: "image:tag", "library/fedora"
+//   - not short names: "quay.io/image", "localhost/image:tag",
+//     "server.org:5000/lib/image", "image@sha256:..."
 func IsShortName(input string) bool {
 	isShort, _, _ := parseUnnormalizedShortName(input)
 	return isShort
@@ -33,12 +35,12 @@ func IsShortName(input string) bool {
 func parseUnnormalizedShortName(input string) (bool, reference.Named, error) {
 	ref, err := reference.Parse(input)
 	if err != nil {
-		return false, nil, errors.Wrapf(err, "cannot parse input: %q", input)
+		return false, nil, fmt.Errorf("cannot parse input: %q: %w", input, err)
 	}
 
 	named, ok := ref.(reference.Named)
 	if !ok {
-		return true, nil, errors.Errorf("%q is not a named reference", input)
+		return true, nil, fmt.Errorf("%q is not a named reference", input)
 	}
 
 	registry := reference.Domain(named)
@@ -47,7 +49,7 @@ func parseUnnormalizedShortName(input string) (bool, reference.Named, error) {
 		// normalized (e.g., docker.io/alpine to docker.io/library/alpine.
 		named, err = reference.ParseNormalizedNamed(input)
 		if err != nil {
-			return false, nil, errors.Wrapf(err, "cannot normalize input: %q", input)
+			return false, nil, fmt.Errorf("cannot normalize input: %q: %w", input, err)
 		}
 		return false, named, nil
 	}
@@ -59,16 +61,12 @@ func parseUnnormalizedShortName(input string) (bool, reference.Named, error) {
 // the tag or digest and stores it in the return values so that both can be
 // re-added to a possible resolved alias' or USRs at a later point.
 func splitUserInput(named reference.Named) (isTagged bool, isDigested bool, normalized reference.Named, tag string, digest digest.Digest) {
-	normalized = named
-
-	tagged, isT := named.(reference.NamedTagged)
-	if isT {
+	if tagged, ok := named.(reference.NamedTagged); ok {
 		isTagged = true
 		tag = tagged.Tag()
 	}
 
-	digested, isD := named.(reference.Digested)
-	if isD {
+	if digested, ok := named.(reference.Digested); ok {
 		isDigested = true
 		digest = digested.Digest()
 	}
@@ -87,7 +85,7 @@ func Add(ctx *types.SystemContext, name string, value reference.Named) error {
 		return err
 	}
 	if !isShort {
-		return errors.Errorf("%q is not a short name", name)
+		return fmt.Errorf("%q is not a short name", name)
 	}
 	return sysregistriesv2.AddShortNameAlias(ctx, name, value.String())
 }
@@ -102,7 +100,7 @@ func Remove(ctx *types.SystemContext, name string) error {
 		return err
 	}
 	if !isShort {
-		return errors.Errorf("%q is not a short name", name)
+		return fmt.Errorf("%q is not a short name", name)
 	}
 	return sysregistriesv2.RemoveShortNameAlias(ctx, name)
 }
@@ -170,26 +168,17 @@ func (r *Resolved) Description() string {
 // Note that nil is returned if len(pullErrors) == 0.  Otherwise, the amount of
 // pull errors must equal the amount of pull candidates.
 func (r *Resolved) FormatPullErrors(pullErrors []error) error {
-	if len(pullErrors) >= 0 && len(pullErrors) != len(r.PullCandidates) {
-		pullErrors = append(pullErrors,
-			errors.Errorf("internal error: expected %d instead of %d errors for %d pull candidates",
+	if len(pullErrors) == 0 {
+		return nil
+	}
+
+	if len(pullErrors) != len(r.PullCandidates) {
+		pullErrors = append(slices.Clone(pullErrors),
+			fmt.Errorf("internal error: expected %d instead of %d errors for %d pull candidates",
 				len(r.PullCandidates), len(pullErrors), len(r.PullCandidates)))
 	}
 
-	switch len(pullErrors) {
-	case 0:
-		return nil
-	case 1:
-		return pullErrors[0]
-	default:
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("%d errors occurred while pulling:", len(pullErrors)))
-		for _, e := range pullErrors {
-			sb.WriteString("\n * ")
-			sb.WriteString(e.Error())
-		}
-		return errors.New(sb.String())
-	}
+	return multierr.Format(fmt.Sprintf("%d errors occurred while pulling:\n * ", len(pullErrors)), "\n * ", "", pullErrors)
 }
 
 // PullCandidate is a resolved name.  Once the Value has been used
@@ -216,7 +205,7 @@ func (c *PullCandidate) Record() error {
 	value := reference.TrimNamed(c.Value)
 
 	if err := Add(c.resolved.systemContext, name.String(), value); err != nil {
-		return errors.Wrapf(err, "recording short-name alias (%q=%q)", c.resolved.userInput, c.Value)
+		return fmt.Errorf("recording short-name alias (%q=%q): %w", c.resolved.userInput, c.Value, err)
 	}
 	return nil
 }
@@ -262,7 +251,7 @@ func Resolve(ctx *types.SystemContext, name string) (*Resolved, error) {
 	case types.ShortNameModeDisabled, types.ShortNameModePermissive, types.ShortNameModeEnforcing:
 		// We're good.
 	default:
-		return nil, errors.Errorf("unsupported short-name mode (%v)", mode)
+		return nil, fmt.Errorf("unsupported short-name mode (%v)", mode)
 	}
 
 	isShort, shortRef, err := parseUnnormalizedShortName(name)
@@ -279,7 +268,7 @@ func Resolve(ctx *types.SystemContext, name string) (*Resolved, error) {
 	if ctx != nil && ctx.PodmanOnlyShortNamesIgnoreRegistriesConfAndForceDockerHub {
 		named, err := reference.ParseNormalizedNamed(name)
 		if err != nil {
-			return nil, errors.Wrapf(err, "cannot normalize input: %q", name)
+			return nil, fmt.Errorf("cannot normalize input: %q: %w", name, err)
 		}
 		resolved.addCandidate(named)
 		resolved.rationale = rationaleEnforcedDockerHub
@@ -328,16 +317,16 @@ func Resolve(ctx *types.SystemContext, name string) (*Resolved, error) {
 	// Error out if there's no matching alias and no search registries.
 	if len(unqualifiedSearchRegistries) == 0 {
 		if usrConfig != "" {
-			return nil, errors.Errorf("short-name %q did not resolve to an alias and no unqualified-search registries are defined in %q", name, usrConfig)
+			return nil, fmt.Errorf("short-name %q did not resolve to an alias and no unqualified-search registries are defined in %q", name, usrConfig)
 		}
-		return nil, errors.Errorf("short-name %q did not resolve to an alias and no containers-registries.conf(5) was found", name)
+		return nil, fmt.Errorf("short-name %q did not resolve to an alias and no containers-registries.conf(5) was found", name)
 	}
 	resolved.originDescription = usrConfig
 
 	for _, reg := range unqualifiedSearchRegistries {
 		named, err := reference.ParseNormalizedNamed(fmt.Sprintf("%s/%s", reg, name))
 		if err != nil {
-			return nil, errors.Wrapf(err, "creating reference with unqualified-search registry %q", reg)
+			return nil, fmt.Errorf("creating reference with unqualified-search registry %q: %w", reg, err)
 		}
 		resolved.addCandidate(named)
 	}
@@ -364,7 +353,7 @@ func Resolve(ctx *types.SystemContext, name string) (*Resolved, error) {
 			return nil, errors.New("short-name resolution enforced but cannot prompt without a TTY")
 		default:
 			// We should not end up here.
-			return nil, errors.Errorf("unexpected short-name mode (%v) during resolution", mode)
+			return nil, fmt.Errorf("unexpected short-name mode (%v) during resolution", mode)
 		}
 	}
 
@@ -387,7 +376,7 @@ func Resolve(ctx *types.SystemContext, name string) (*Resolved, error) {
 
 	named, err := reference.ParseNormalizedNamed(selection)
 	if err != nil {
-		return nil, errors.Wrapf(err, "selection %q is not a valid reference", selection)
+		return nil, fmt.Errorf("selection %q is not a valid reference: %w", selection, err)
 	}
 
 	resolved.PullCandidates = nil
@@ -402,9 +391,9 @@ func Resolve(ctx *types.SystemContext, name string) (*Resolved, error) {
 // not a short name), it is returned as is.  In case, it's a short name, the
 // returned slice of named references looks as follows:
 //
-//  1) If present, the short-name alias
-//  2) "localhost/" as used by many container engines such as Podman and Buildah
-//  3) Unqualified-search registries from the registries.conf files
+//  1. If present, the short-name alias
+//  2. "localhost/" as used by many container engines such as Podman and Buildah
+//  3. Unqualified-search registries from the registries.conf files
 //
 // Note that tags and digests are stripped from the specified name before
 // looking up an alias. Stripped off tags and digests are later on appended to
@@ -428,7 +417,7 @@ func ResolveLocally(ctx *types.SystemContext, name string) ([]reference.Named, e
 		for _, reg := range registries {
 			named, err := reference.ParseNormalizedNamed(fmt.Sprintf("%s/%s", reg, name))
 			if err != nil {
-				return nil, errors.Wrapf(err, "creating reference with unqualified-search registry %q", reg)
+				return nil, fmt.Errorf("creating reference with unqualified-search registry %q: %w", reg, err)
 			}
 			named = reference.TagNameOnly(named) // Make sure to add ":latest" if needed
 			candidates = append(candidates, named)

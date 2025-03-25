@@ -6,9 +6,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"os"
-	"sort"
 	"testing"
 
+	"github.com/containers/image/v5/internal/set"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -39,23 +39,23 @@ func TestSetupCertificates(t *testing.T) {
 	// On systems where SystemCertPool is special cased, this compares two empty sets
 	// and succeeds.
 	// There isn’t a plausible alternative to calling .Subjects() here.
-	loadedSubjectBytes := map[string]struct{}{}
+	loadedSubjectBytes := set.New[string]()
 	// lint:ignore SA1019 Receiving no data for system roots is acceptable.
 	for _, s := range tlsc.RootCAs.Subjects() { //nolint staticcheck: the lint:ignore directive is somehow not recognized (and causes an extra warning!)
-		loadedSubjectBytes[string(s)] = struct{}{}
+		loadedSubjectBytes.Add(string(s))
 	}
 	systemCertPool, err := x509.SystemCertPool()
 	require.NoError(t, err)
 	// lint:ignore SA1019 Receiving no data for system roots is acceptable.
 	for _, s := range systemCertPool.Subjects() { //nolint staticcheck: the lint:ignore directive is somehow not recognized (and causes an extra warning!)
-		_, ok := loadedSubjectBytes[string(s)]
+		ok := loadedSubjectBytes.Contains(string(s))
 		assert.True(t, ok)
 	}
 
 	// RootCAs include our certificates.
 	// We could possibly test without .Subjects() this by validating certificates
 	// signed by our test CAs.
-	loadedSubjectCNs := map[string]struct{}{}
+	loadedSubjectCNs := set.New[string]()
 	// lint:ignore SA1019 We only care about non-system roots here.
 	for _, s := range tlsc.RootCAs.Subjects() { //nolint staticcheck: the lint:ignore directive is somehow not recognized (and causes an extra warning!)
 		subjectRDN := pkix.RDNSequence{}
@@ -64,23 +64,19 @@ func TestSetupCertificates(t *testing.T) {
 		require.Empty(t, rest)
 		subject := pkix.Name{}
 		subject.FillFromRDNSequence(&subjectRDN)
-		loadedSubjectCNs[subject.CommonName] = struct{}{}
+		loadedSubjectCNs.Add(subject.CommonName)
 	}
-	_, ok := loadedSubjectCNs["containers/image test CA certificate 1"]
+	ok := loadedSubjectCNs.Contains("containers/image test CA certificate 1")
 	assert.True(t, ok)
-	_, ok = loadedSubjectCNs["containers/image test CA certificate 2"]
+	ok = loadedSubjectCNs.Contains("containers/image test CA certificate 2")
 	assert.True(t, ok)
 	// Certificates include our certificates
 	require.Len(t, tlsc.Certificates, 2)
 	names := []string{}
 	for _, c := range tlsc.Certificates {
-		require.Len(t, c.Certificate, 1)
-		parsed, err := x509.ParseCertificate(c.Certificate[0])
-		require.NoError(t, err)
-		names = append(names, parsed.Subject.CommonName)
+		names = append(names, c.Leaf.Subject.CommonName)
 	}
-	sort.Strings(names)
-	assert.Equal(t, []string{
+	assert.ElementsMatch(t, []string{
 		"containers/image test client certificate 1",
 		"containers/image test client certificate 2",
 	}, names)

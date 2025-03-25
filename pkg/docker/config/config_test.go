@@ -6,10 +6,17 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/containers/image/v5/docker/reference"
 	"github.com/containers/image/v5/types"
+	dockerReference "github.com/distribution/reference"
+	"github.com/docker/cli/cli/config"
+	"github.com/docker/cli/cli/config/credentials"
+	configtypes "github.com/docker/cli/cli/config/types"
+	"github.com/docker/docker/registry"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -17,6 +24,7 @@ import (
 func TestGetPathToAuth(t *testing.T) {
 	const linux = "linux"
 	const darwin = "darwin"
+	const freebsd = "freebsd"
 
 	uid := fmt.Sprintf("%d", os.Getuid())
 	// We don’t have to override the home directory for this because use of this path does not depend
@@ -25,82 +33,77 @@ func TestGetPathToAuth(t *testing.T) {
 
 	tmpDir := t.TempDir()
 
-	// Environment is per-process, so this looks very unsafe; actually it seems fine because tests are not
-	// run in parallel unless they opt in by calling t.Parallel().  So don’t do that.
-	oldXRD, hasXRD := os.LookupEnv("XDG_RUNTIME_DIR")
-	defer func() {
-		if hasXRD {
-			os.Setenv("XDG_RUNTIME_DIR", oldXRD)
-		} else {
-			os.Unsetenv("XDG_RUNTIME_DIR")
-		}
-	}()
-
-	for _, c := range []struct {
-		sys          *types.SystemContext
-		os           string
-		xrd          string
-		expected     string
-		legacyFormat bool
+	for caseIndex, c := range []struct {
+		sys                   *types.SystemContext
+		os                    string
+		xrd                   string
+		expected              string
+		legacyFormat          bool
+		expectedUserSpecified bool
 	}{
 		// Default paths
-		{&types.SystemContext{}, linux, "", "/run/containers/" + uid + "/auth.json", false},
-		{&types.SystemContext{}, darwin, "", darwinDefault, false},
-		{nil, linux, "", "/run/containers/" + uid + "/auth.json", false},
-		{nil, darwin, "", darwinDefault, false},
+		{&types.SystemContext{}, linux, "", "/run/containers/" + uid + "/auth.json", false, false},
+		{&types.SystemContext{}, darwin, "", darwinDefault, false, false},
+		{&types.SystemContext{}, freebsd, "", darwinDefault, false, false},
+		{nil, linux, "", "/run/containers/" + uid + "/auth.json", false, false},
+		{nil, darwin, "", darwinDefault, false, false},
+		{nil, freebsd, "", darwinDefault, false, false},
 		// SystemContext overrides
-		{&types.SystemContext{AuthFilePath: "/absolute/path"}, linux, "", "/absolute/path", false},
-		{&types.SystemContext{AuthFilePath: "/absolute/path"}, darwin, "", "/absolute/path", false},
-		{&types.SystemContext{LegacyFormatAuthFilePath: "/absolute/path"}, linux, "", "/absolute/path", true},
-		{&types.SystemContext{LegacyFormatAuthFilePath: "/absolute/path"}, darwin, "", "/absolute/path", true},
-		{&types.SystemContext{RootForImplicitAbsolutePaths: "/prefix"}, linux, "", "/prefix/run/containers/" + uid + "/auth.json", false},
-		{&types.SystemContext{RootForImplicitAbsolutePaths: "/prefix"}, darwin, "", "/prefix/run/containers/" + uid + "/auth.json", false},
+		{&types.SystemContext{AuthFilePath: "/absolute/path"}, linux, "", "/absolute/path", false, true},
+		{&types.SystemContext{AuthFilePath: "/absolute/path"}, darwin, "", "/absolute/path", false, true},
+		{&types.SystemContext{AuthFilePath: "/absolute/path"}, freebsd, "", "/absolute/path", false, true},
+		{&types.SystemContext{LegacyFormatAuthFilePath: "/absolute/path"}, linux, "", "/absolute/path", true, true},
+		{&types.SystemContext{LegacyFormatAuthFilePath: "/absolute/path"}, darwin, "", "/absolute/path", true, true},
+		{&types.SystemContext{LegacyFormatAuthFilePath: "/absolute/path"}, freebsd, "", "/absolute/path", true, true},
+		{&types.SystemContext{RootForImplicitAbsolutePaths: "/prefix"}, linux, "", "/prefix/run/containers/" + uid + "/auth.json", false, false},
+		{&types.SystemContext{RootForImplicitAbsolutePaths: "/prefix"}, darwin, "", darwinDefault, false, false},
+		{&types.SystemContext{RootForImplicitAbsolutePaths: "/prefix"}, freebsd, "", darwinDefault, false, false},
 		// XDG_RUNTIME_DIR defined
-		{nil, linux, tmpDir, tmpDir + "/containers/auth.json", false},
-		{nil, darwin, tmpDir, darwinDefault, false},
-		{nil, linux, tmpDir + "/thisdoesnotexist", "", false},
-		{nil, darwin, tmpDir + "/thisdoesnotexist", darwinDefault, false},
+		{nil, linux, tmpDir, tmpDir + "/containers/auth.json", false, false},
+		{nil, darwin, tmpDir, darwinDefault, false, false},
+		{nil, freebsd, tmpDir, darwinDefault, false, false},
+		{nil, linux, tmpDir + "/thisdoesnotexist", "", false, false},
+		{nil, darwin, tmpDir + "/thisdoesnotexist", darwinDefault, false, false},
+		{nil, freebsd, tmpDir + "/thisdoesnotexist", darwinDefault, false, false},
 	} {
-		if c.xrd != "" {
-			os.Setenv("XDG_RUNTIME_DIR", c.xrd)
-		} else {
-			os.Unsetenv("XDG_RUNTIME_DIR")
-		}
-		res, lf, err := getPathToAuthWithOS(c.sys, c.os)
-		if c.expected == "" {
-			assert.Error(t, err)
-		} else {
-			require.NoError(t, err)
-			assert.Equal(t, c.expected, res)
-			assert.Equal(t, c.legacyFormat, lf)
-		}
+		t.Run(fmt.Sprintf("%d", caseIndex), func(t *testing.T) {
+			// Always use t.Setenv() to ensure XDG_RUNTIME_DIR is restored to the original value after the test.
+			// Then, in cases where the test needs XDG_RUNTIME_DIR unset (not just set to empty), use a raw os.Unsetenv()
+			// to override the situation. (Sadly there isn’t a t.Unsetenv() as of Go 1.17.)
+			t.Setenv("XDG_RUNTIME_DIR", c.xrd)
+			if c.xrd == "" {
+				os.Unsetenv("XDG_RUNTIME_DIR")
+			}
+			res, userSpecified, err := getPathToAuthWithOS(c.sys, c.os)
+			if c.expected == "" {
+				assert.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, authPath{path: c.expected, legacyFormat: c.legacyFormat}, res)
+				assert.Equal(t, c.expectedUserSpecified, userSpecified)
+			}
+		})
 	}
 }
 
 func TestGetAuth(t *testing.T) {
-	origXDG := os.Getenv("XDG_RUNTIME_DIR")
 	tmpXDGRuntimeDir := t.TempDir()
 	t.Logf("using temporary XDG_RUNTIME_DIR directory: %q", tmpXDGRuntimeDir)
-	// override XDG_RUNTIME_DIR
-	os.Setenv("XDG_RUNTIME_DIR", tmpXDGRuntimeDir)
-	defer os.Setenv("XDG_RUNTIME_DIR", origXDG)
+	t.Setenv("XDG_RUNTIME_DIR", tmpXDGRuntimeDir)
 
 	// override PATH for executing credHelper
 	curtDir, err := os.Getwd()
 	require.NoError(t, err)
 	origPath := os.Getenv("PATH")
 	newPath := fmt.Sprintf("%s:%s", filepath.Join(curtDir, "testdata"), origPath)
-	os.Setenv("PATH", newPath)
+	t.Setenv("PATH", newPath)
 	t.Logf("using PATH: %q", newPath)
-	defer func() {
-		os.Setenv("PATH", origPath)
-	}()
 
 	tmpHomeDir := t.TempDir()
 	t.Logf("using temporary home directory: %q", tmpHomeDir)
 
 	configDir1 := filepath.Join(tmpXDGRuntimeDir, "containers")
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+	if runtime.GOOS != "linux" {
 		configDir1 = filepath.Join(tmpHomeDir, ".config", "containers")
 	}
 	if err := os.MkdirAll(configDir1, 0700); err != nil {
@@ -405,18 +408,15 @@ func TestGetAuthPreferNewConfig(t *testing.T) {
 }
 
 func TestGetAuthFailsOnBadInput(t *testing.T) {
-	origXDG := os.Getenv("XDG_RUNTIME_DIR")
 	tmpXDGRuntimeDir := t.TempDir()
 	t.Logf("using temporary XDG_RUNTIME_DIR directory: %q", tmpXDGRuntimeDir)
-	// override XDG_RUNTIME_DIR
-	os.Setenv("XDG_RUNTIME_DIR", tmpXDGRuntimeDir)
-	defer os.Setenv("XDG_RUNTIME_DIR", origXDG)
+	t.Setenv("XDG_RUNTIME_DIR", tmpXDGRuntimeDir)
 
 	tmpHomeDir := t.TempDir()
 	t.Logf("using temporary home directory: %q", tmpHomeDir)
 
 	configDir := filepath.Join(tmpXDGRuntimeDir, "containers")
-	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
+	if runtime.GOOS != "linux" {
 		configDir = filepath.Join(tmpHomeDir, ".config", "containers")
 	}
 	if err := os.MkdirAll(configDir, 0750); err != nil {
@@ -454,6 +454,77 @@ func TestGetAuthFailsOnBadInput(t *testing.T) {
 	assert.ErrorContains(t, err, "unmarshaling JSON")
 }
 
+// TestGetCredentialsInteroperability verifies that Docker-created config files can be consumed by GetCredentials.
+func TestGetCredentialsInteroperability(t *testing.T) {
+	const testUser = "some-user"
+	const testPassword = "some-password"
+
+	for _, c := range []struct {
+		loginKey string // or "" for Docker's default. We must special-case that because (docker login docker.io) works, but (docker logout docker.io) doesn't!
+		queryKey string
+	}{
+		{"example.com", "example.com"},
+		{"example.com", "example.com/ns/repo"},
+		{"example.com:8000", "example.com:8000"},
+		{"example.com:8000", "example.com:8000/ns/repo"},
+		{"", "docker.io"},
+		{"", "docker.io/library/busybox"},
+		{"", "docker.io/notlibrary/busybox"},
+	} {
+		configDir := t.TempDir()
+		configPath := filepath.Join(configDir, config.ConfigFileName)
+
+		// Initially, there are no credentials
+		creds, err := GetCredentials(&types.SystemContext{DockerCompatAuthFilePath: configPath}, c.queryKey)
+		require.NoError(t, err)
+		assert.Equal(t, types.DockerAuthConfig{}, creds)
+
+		// Log in. This is intended to match github.com/docker/cli/command/registry.runLogin
+		serverAddress := c.loginKey
+		if serverAddress == "" {
+			serverAddress = registry.IndexServer
+		}
+		if serverAddress != registry.IndexServer {
+			serverAddress = credentials.ConvertToHostname(serverAddress)
+		}
+		configFile, err := config.Load(configDir)
+		require.NoError(t, err)
+		err = configFile.GetCredentialsStore(serverAddress).Store(configtypes.AuthConfig{
+			ServerAddress: serverAddress,
+			Username:      testUser,
+			Password:      testPassword,
+		})
+		require.NoError(t, err)
+		// We can find the credentials.
+		creds, err = GetCredentials(&types.SystemContext{DockerCompatAuthFilePath: configPath}, c.queryKey)
+		require.NoError(t, err)
+		assert.Equal(t, types.DockerAuthConfig{
+			Username: testUser,
+			Password: testPassword,
+		}, creds)
+
+		// Log out. This is intended to match github.com/docker/cli/command/registry.runLogout
+		var regsToLogout []string
+		if c.loginKey == "" {
+			regsToLogout = []string{registry.IndexServer}
+		} else {
+			hostnameAddress := credentials.ConvertToHostname(c.loginKey)
+			regsToLogout = []string{c.loginKey, hostnameAddress, "http://" + hostnameAddress, "https://" + hostnameAddress}
+		}
+		succeeded := false
+		for _, r := range regsToLogout {
+			if err := configFile.GetCredentialsStore(r).Erase(r); err == nil {
+				succeeded = true
+			}
+		}
+		require.True(t, succeeded)
+		// We can’t find the credentials any more.
+		creds, err = GetCredentials(&types.SystemContext{DockerCompatAuthFilePath: configPath}, c.queryKey)
+		require.NoError(t, err)
+		assert.Equal(t, types.DockerAuthConfig{}, creds)
+	}
+}
+
 func TestGetAllCredentials(t *testing.T) {
 	// Create a temporary authentication file.
 	tmpFile, err := os.CreateTemp("", "auth.json.")
@@ -466,11 +537,8 @@ func TestGetAllCredentials(t *testing.T) {
 	require.NoError(t, err)
 	origPath := os.Getenv("PATH")
 	newPath := fmt.Sprintf("%s:%s", filepath.Join(path, "testdata"), origPath)
-	os.Setenv("PATH", newPath)
+	t.Setenv("PATH", newPath)
 	t.Logf("using PATH: %q", newPath)
-	defer func() {
-		os.Setenv("PATH", origPath)
-	}()
 	err = os.Chmod(filepath.Join(path, "testdata", "docker-credential-helper-registry"), os.ModePerm)
 	require.NoError(t, err)
 	sys := types.SystemContext{
@@ -480,11 +548,12 @@ func TestGetAllCredentials(t *testing.T) {
 	}
 
 	// Make sure that we can handle no-creds-found errors.
-	os.Setenv("DOCKER_CONFIG", filepath.Join(path, "testdata"))
-	authConfigs, err := GetAllCredentials(nil)
-	require.NoError(t, err)
-	require.Empty(t, authConfigs)
-	os.Unsetenv("DOCKER_CONFIG")
+	t.Run("no credentials found", func(t *testing.T) {
+		t.Setenv("DOCKER_CONFIG", filepath.Join(path, "testdata"))
+		authConfigs, err := GetAllCredentials(nil)
+		require.NoError(t, err)
+		require.Empty(t, authConfigs)
+	})
 
 	for _, data := range [][]struct {
 		writeKey    string
@@ -566,7 +635,7 @@ func TestGetAllCredentials(t *testing.T) {
 	}
 }
 
-func TestAuthKeysForKey(t *testing.T) {
+func TestAuthKeyLookupOrder(t *testing.T) {
 	for _, tc := range []struct {
 		name, input string
 		expected    []string
@@ -619,8 +688,17 @@ func TestAuthKeysForKey(t *testing.T) {
 			},
 		},
 	} {
-		result := authKeysForKey(tc.input)
-		require.Equal(t, tc.expected, result, tc.name)
+		var registry string
+		if firstSlash := strings.IndexRune(tc.input, '/'); firstSlash != -1 {
+			registry = tc.input[:firstSlash]
+		} else {
+			registry = tc.input
+		}
+		result := slices.Collect(authKeyLookupOrder(tc.input, registry, false))
+		assert.Equal(t, tc.expected, result, tc.name)
+
+		result = slices.Collect(authKeyLookupOrder(tc.input, registry, true))
+		assert.Equal(t, []string{registry}, result, tc.name)
 	}
 }
 
@@ -670,7 +748,7 @@ func TestSetCredentials(t *testing.T) {
 		}
 
 		// Read the resulting file and verify it contains the expected keys
-		auth, err := readJSONFile(tmpFile.Name(), false)
+		auth, err := newAuthPathDefault(tmpFile.Name()).parse()
 		require.NoError(t, err)
 		assert.Len(t, auth.AuthConfigs, len(writtenCredentials))
 		// auth.AuthConfigs and writtenCredentials are both maps, i.e. their keys are unique;
@@ -768,7 +846,6 @@ func TestRemoveAuthentication(t *testing.T) {
 			},
 		},
 	} {
-
 		content, err := json.Marshal(&tc.config)
 		require.NoError(t, err)
 
@@ -790,10 +867,99 @@ func TestRemoveAuthentication(t *testing.T) {
 			}
 		}
 
-		auth, err := readJSONFile(tmpFile.Name(), false)
+		auth, err := newAuthPathDefault(tmpFile.Name()).parse()
 		require.NoError(t, err)
 
 		tc.assert(auth)
+	}
+}
+
+// TestSetCredentialsInteroperability verifies that our config files can be consumed by Docker.
+func TestSetCredentialsInteroperability(t *testing.T) {
+	const testUser = "some-user"
+	const testPassword = "some-password"
+
+	for _, c := range []struct {
+		loginKey      string // or "" for Docker's default. We must special-case that because (docker login docker.io) works, but (docker logout docker.io) doesn't!
+		queryRepo     string
+		otherContents bool
+		loginKeyError bool
+	}{
+		{loginKey: "example.com", queryRepo: "example.com/ns/repo"},
+		{loginKey: "example.com:8000", queryRepo: "example.com:8000/ns/repo"},
+		{loginKey: "docker.io", queryRepo: "docker.io/library/busybox"},
+		{loginKey: "docker.io", queryRepo: "docker.io/notlibrary/busybox"},
+		{loginKey: "example.com", queryRepo: "example.com/ns/repo", otherContents: true},
+		{loginKey: "example.com/ns", queryRepo: "example.com/ns/repo", loginKeyError: true},
+		{loginKey: "example.com:8000/ns", queryRepo: "example.com:8000/ns/repo", loginKeyError: true},
+	} {
+		configDir := t.TempDir()
+		configPath := filepath.Join(configDir, config.ConfigFileName)
+
+		// The credential lookups are intended to match github.com/docker/cli/command/image.RunPull .
+		dockerRef, err := dockerReference.ParseNormalizedNamed(c.queryRepo)
+		require.NoError(t, err)
+		dockerRef = dockerReference.TagNameOnly(dockerRef)
+		repoInfo, err := registry.ParseRepositoryInfo(dockerRef)
+		require.NoError(t, err)
+		configKey := repoInfo.Index.Name
+		if repoInfo.Index.Official {
+			configKey = registry.IndexServer
+		}
+
+		if c.otherContents {
+			err := os.WriteFile(configPath, []byte(`{"auths":{"unmodified-domain.example":{"identitytoken":"identity"}},`+
+				`"psFormat":"psFormatValue",`+
+				`"credHelpers":{"helper-domain.example":"helper-name"}`+
+				`}`), 0o700)
+			require.NoError(t, err)
+		}
+
+		// Initially, there are no credentials
+		configFile, err := config.Load(configDir)
+		require.NoError(t, err)
+		creds, err := configFile.GetCredentialsStore(configKey).Get(configKey)
+		require.NoError(t, err)
+		assert.Equal(t, configtypes.AuthConfig{}, creds)
+
+		// Log in.
+		_, err = SetCredentials(&types.SystemContext{DockerCompatAuthFilePath: configPath}, c.loginKey, testUser, testPassword)
+		if c.loginKeyError {
+			assert.Error(t, err)
+			continue
+		}
+		require.NoError(t, err)
+		// We can find the credentials.
+		configFile, err = config.Load(configDir)
+		require.NoError(t, err)
+		creds, err = configFile.GetCredentialsStore(configKey).Get(configKey)
+		require.NoError(t, err)
+		assert.Equal(t, configtypes.AuthConfig{
+			ServerAddress: configKey,
+			Username:      testUser,
+			Password:      testPassword,
+		}, creds)
+
+		// Log out.
+		err = RemoveAuthentication(&types.SystemContext{DockerCompatAuthFilePath: configPath}, c.loginKey)
+		require.NoError(t, err)
+		// We can’t find the credentials any more.
+		configFile, err = config.Load(configDir)
+		require.NoError(t, err)
+		creds, err = configFile.GetCredentialsStore(configKey).Get(configKey)
+		require.NoError(t, err)
+		assert.Equal(t, configtypes.AuthConfig{}, creds)
+
+		if c.otherContents {
+			creds, err = configFile.GetCredentialsStore("unmodified-domain.example").Get("unmodified-domain.example")
+			require.NoError(t, err)
+			assert.Equal(t, configtypes.AuthConfig{
+				ServerAddress: "unmodified-domain.example",
+				IdentityToken: "identity",
+			}, creds)
+			assert.Equal(t, "psFormatValue", configFile.PsFormat)
+			assert.Equal(t, map[string]string{"helper-domain.example": "helper-name"}, configFile.CredentialHelpers)
+		}
 	}
 }
 
@@ -874,7 +1040,6 @@ func TestSetGetCredentials(t *testing.T) {
 			useLegacyFormat: true,
 		},
 	} {
-
 		// Create a new empty SystemContext referring an empty auth.json
 		tmpFile, err := os.CreateTemp("", "auth.json-")
 		require.NoError(t, err)

@@ -19,6 +19,12 @@ Container engines will use the `$HOME/.config/containers/registries.conf` if it 
 `credential-helpers`
 : An array of default credential helpers used as external credential stores.  Note that "containers-auth.json" is a reserved value to use auth files as specified in containers-auth.json(5).  The credential helpers are set to `["containers-auth.json"]` if none are specified.
 
+`additional-layer-store-auth-helper`
+: A string containing the helper binary name. This enables passing registry credentials to an
+  Additional Layer Store every time an image is read using the `docker://`
+  transport so that it can access private registries. See the 'Enabling Additional Layer Store to access to private registries' section below for
+  more details.
+
 ### NAMESPACED `[[registry]]` SETTINGS
 
 The bulk of the configuration is represented as an array of `[[registry]]`
@@ -43,7 +49,7 @@ also include wildcarded subdomains in the format `*.example.com`.
 The wildcard should only be present at the beginning as shown in the formats
 above. Other cases will not work. For example, `*.example.com` is valid but
 `example.*.com`, `*.example.com/foo` and `*.example.com:5000/foo/bar:baz` are not.
-Note that `*` matches an arbitary number of subdomains. `*.example.com` will hence
+Note that `*` matches an arbitrary number of subdomains. `*.example.com` will hence
 match `bar.example.com`, `foo.bar.example.com` and so on.
 
 As a special case, the `prefix` field can be missing; if so, it defaults to the value
@@ -73,16 +79,16 @@ internet without having to change `Dockerfile`s, or to add redundancy).
 : Accepts the same format as the `prefix` field, and specifies the physical location
 of the `prefix`-rooted namespace.
 
-By default, this equal to `prefix` (in which case `prefix` can be omitted and the
+By default, this is equal to `prefix` (in which case `prefix` can be omitted and the
 `[[registry]]` TOML table can only specify `location`).
 
 Example: Given
 ```
 prefix = "example.com/foo"
-location = "internal-registry-for-example.net/bar"
+location = "internal-registry-for-example.com/bar"
 ```
 requests for the image `example.com/foo/myimage:latest` will actually work with the
-`internal-registry-for-example.net/bar/myimage:latest` image.
+`internal-registry-for-example.com/bar/myimage:latest` image.
 
 With a `prefix` containing a wildcard in the format: "*.example.com" for subdomain matching,
 the location can be empty. In such a case,
@@ -127,8 +133,9 @@ Referencing an image by digest ensures that the same is always used
 different images if the tag mapping is out of sync).
 
 
-*Note*: Redirection and mirrors are currently processed only when reading images, not when pushing
-to a registry; that may change in the future.
+*Note*: Redirection and mirrors are currently processed only when reading a single image,
+not when pushing to a registry nor when doing any other kind of lookup/search on a on a registry.
+This may change in the future.
 
 #### Short-Name Aliasing
 The use of unqualified-search registries entails an ambiguity as it is
@@ -247,11 +254,35 @@ Given the above, a pull of `example.com/foo/image:latest` will try:
 
 1. `example-mirror-0.local/mirror-for-foo/image:latest`
 2. `example-mirror-1.local/mirrors/foo/image:latest`
-3. `internal-registry-for-example.net/bar/image:latest`
+3. `internal-registry-for-example.com/bar/image:latest`
 
 in order, and use the first one that exists.
 
 Note that a mirror is associated only with the current `[[registry]]` TOML table. If using the example above, pulling the image `registry.com/image:latest` will hence only reach out to `mirror.registry.com`, and the mirrors associated with `example.com/foo` will not be considered.
+
+### Enabling Additional Layer Store to access to private registries
+
+The `additional-layer-store-auth-helper` option enables passing registry
+credentials to an Additional Layer Store so that it can access private registries.
+
+When accessing a private registry via an Additional Layer Store, a helper binary needs to be provided. This helper binary is
+registered via the `additional-layer-store-auth-helper` option. Every time an image
+is read using the `docker://` transport, the specified helper binary is executed
+and receives registry credentials from stdin in the following format.
+
+```json
+{
+  "$image_reference": {
+    "username": "$username",
+    "password": "$password",
+    "identityToken": "$identityToken"
+  }
+}
+```
+
+The format of `$image_reference` is `$repo{:$tag|@$digest}`.
+
+Additional Layer Stores can use this helper binary to access the private registry.
 
 ## VERSION 1 FORMAT - DEPRECATED
 VERSION 1 format is still supported but it does not support

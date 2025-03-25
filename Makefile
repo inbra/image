@@ -1,5 +1,3 @@
-.PHONY: all tools test validate lint .gitvalidation fmt
-
 export GOPROXY=https://proxy.golang.org
 
 
@@ -12,10 +10,10 @@ endif
 BUILD_TAGS_WINDOWS_CROSS = containers_image_openpgp
 BUILD_TAGS_DARWIN_CROSS = containers_image_openpgp
 
-BUILDTAGS = btrfs_noversion libdm_no_deferred_remove
+BUILDTAGS = btrfs_noversion
 BUILDFLAGS := -tags "$(BUILDTAGS)"
 
-PACKAGES := $(shell GO111MODULE=on go list $(BUILDFLAGS) ./...)
+PACKAGES := $(shell go list $(BUILDFLAGS) ./...)
 SOURCE_DIRS = $(shell echo $(PACKAGES) | awk 'BEGIN{FS="/"; RS=" "}{print $$4}' | uniq)
 
 PREFIX ?= ${DESTDIR}/usr
@@ -24,72 +22,96 @@ GOMD2MAN ?= $(shell command -v go-md2man || echo '$(GOBIN)/go-md2man')
 MANPAGES_MD = $(wildcard docs/*.5.md)
 MANPAGES ?= $(MANPAGES_MD:%.md=%)
 
+ifeq ($(shell uname -s),FreeBSD)
+CONTAINERSCONFDIR ?= /usr/local/etc/containers
+else
+CONTAINERSCONFDIR ?= /etc/containers
+endif
+REGISTRIESDDIR ?= ${CONTAINERSCONFDIR}/registries.d
+
+# N/B: This value is managed by Renovate, manual changes are
+# possible, as long as they don't disturb the formatting
+# (i.e. DO NOT ADD A 'v' prefix!)
+GOLANGCI_LINT_VERSION := 1.64.8
+
 export PATH := $(PATH):${GOBIN}
 
-# On macOS, (brew install gpgme) installs it within /usr/local, but /usr/local/include is not in the default search path.
-# Rather than hard-code this directory, use gpgme-config. Sadly that must be done at the top-level user
-# instead of locally in the gpgme subpackage, because cgo supports only pkg-config, not general shell scripts,
-# and gpgme does not install a pkg-config file.
-# If gpgme is not installed or gpgme-config can’t be found for other reasons, the error is silently ignored
-# (and the user will probably find out because the cgo compilation will fail).
-GPGME_ENV = CGO_CFLAGS="$(shell gpgme-config --cflags 2>/dev/null)" CGO_LDFLAGS="$(shell gpgme-config --libs 2>/dev/null)"
-
+.PHONY: all
 all: tools test validate .gitvalidation
 
+.PHONY: build
 build:
-	$(GPGME_ENV) GO111MODULE="on" go build $(BUILDFLAGS) ./...
+	go build $(BUILDFLAGS) ./...
 
 $(MANPAGES): %: %.md
 	$(GOMD2MAN) -in $< -out $@
 
 docs: $(MANPAGES)
 
+.PHONY: install-docs
 install-docs: docs
 	install -d -m 755 ${MANINSTALLDIR}/man5
 	install -m 644 docs/*.5 ${MANINSTALLDIR}/man5/
 
+.PHONY: install
 install: install-docs
+	install -d -m 755 ${DESTDIR}${CONTAINERSCONFDIR}
+	install -m 644 default-policy.json ${DESTDIR}${CONTAINERSCONFDIR}/policy.json
+	install -d -m 755 ${DESTDIR}${REGISTRIESDDIR}
+	install -m 644 default.yaml ${DESTDIR}${REGISTRIESDDIR}/default.yaml
 
+.PHONY: cross
 cross:
 	GOOS=windows $(MAKE) build BUILDTAGS="$(BUILDTAGS) $(BUILD_TAGS_WINDOWS_CROSS)"
 	GOOS=darwin $(MAKE) build BUILDTAGS="$(BUILDTAGS) $(BUILD_TAGS_DARWIN_CROSS)"
 
-tools: .install.gitvalidation .install.golangci-lint .install.golint
+.PHONY: tools
+tools: .install.gitvalidation .install.golangci-lint
 
+.PHONY: .install.gitvalidation
 .install.gitvalidation:
 	if [ ! -x "$(GOBIN)/git-validation" ]; then \
-		GO111MODULE="off" go get $(BUILDFLAGS) github.com/vbatts/git-validation; \
+		go install github.com/vbatts/git-validation@latest; \
 	fi
 
+.PHONY: .install.golangci-lint
 .install.golangci-lint:
 	if [ ! -x "$(GOBIN)/golangci-lint" ]; then \
-		curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh| sh -s -- -b $(GOBIN) v1.44.2; \
+		curl -sfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh| sh -s -- -b $(GOBIN) v$(GOLANGCI_LINT_VERSION) ; \
 	fi
 
-.install.golint:
-	# Note, golint is only needed for Skopeo's tests.
-	if [ ! -x "$(GOBIN)/golint" ]; then \
-		GO111MODULE="off" go get -u $(BUILDFLAGS) golang.org/x/lint/golint; \
-	fi
-
+.PHONY: clean
 clean:
 	rm -rf $(MANPAGES)
 
+.PHONY: test
 test:
-	@$(GPGME_ENV) GO111MODULE="on" go test $(BUILDFLAGS) -cover ./...
+	@go test $(BUILDFLAGS) -cover ./...
 
+.PHONY: fmt
 fmt:
 	@gofmt -l -s -w $(SOURCE_DIRS)
 
+.PHONY: validate
 validate: lint
 	@BUILDTAGS="$(BUILDTAGS)" hack/validate.sh
 
+.PHONY: lint
 lint:
 	$(GOBIN)/golangci-lint run --build-tags "$(BUILDTAGS)"
 
 # When this is running in CI, it will only check the CI commit range
+.PHONY: .gitvalidation
 .gitvalidation:
 	@which $(GOBIN)/git-validation > /dev/null 2>/dev/null || (echo "ERROR: git-validation not found. Consider 'make clean && make tools'" && false)
 	git fetch -q "https://github.com/containers/image.git" "refs/heads/main"
 	upstream="$$(git rev-parse --verify FETCH_HEAD)" ; \
 		$(GOBIN)/git-validation -q -run DCO,short-subject,dangling-whitespace -range $$upstream..HEAD
+
+.PHONY: vendor-in-container
+vendor-in-container:
+	podman run --privileged --rm --env HOME=/root -v `pwd`:/src -w /src golang go mod tidy
+
+.PHONY: codespell
+codespell:
+	codespell -w

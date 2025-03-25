@@ -97,9 +97,7 @@ func TestNewGPGSigningMechanismInDirectory(t *testing.T) {
 	}
 
 	// If we use the default directory mechanism, GNUPGHOME is respected.
-	origGNUPGHOME := os.Getenv("GNUPGHOME")
-	defer os.Setenv("GNUPGHOME", origGNUPGHOME)
-	os.Setenv("GNUPGHOME", testGPGHomeDirectory)
+	t.Setenv("GNUPGHOME", testGPGHomeDirectory)
 	mech, err = newGPGSigningMechanismInDirectory("")
 	require.NoError(t, err)
 	defer mech.Close()
@@ -137,7 +135,7 @@ func TestNewEphemeralGPGSigningMechanism(t *testing.T) {
 		assert.Equal(t, TestKeyFingerprint, signingFingerprint, version)
 	}
 
-	// Two keys: Read the binary-format pubring.gpg, and concatenate it twice.
+	// Two keys in a keyring: Read the binary-format pubring.gpg, and concatenate it twice.
 	// (Using two copies of public-key.gpg, in the ASCII-armored format, works with
 	// gpgmeSigningMechanism but not openpgpSigningMechanism.)
 	keyBlob, err = os.ReadFile("./fixtures/pubring.gpg")
@@ -146,6 +144,16 @@ func TestNewEphemeralGPGSigningMechanism(t *testing.T) {
 	require.NoError(t, err)
 	defer mech.Close()
 	assert.Equal(t, []string{TestKeyFingerprint, TestKeyFingerprintWithPassphrase, TestKeyFingerprint, TestKeyFingerprintWithPassphrase}, keyIdentities)
+
+	// Two keys from two blobs:
+	keyBlob1, err := os.ReadFile("./fixtures/public-key-1.gpg")
+	require.NoError(t, err)
+	keyBlob2, err := os.ReadFile("./fixtures/public-key-2.gpg")
+	require.NoError(t, err)
+	mech, keyIdentities, err = newEphemeralGPGSigningMechanism([][]byte{keyBlob1, keyBlob2})
+	require.NoError(t, err)
+	defer mech.Close()
+	assert.Equal(t, []string{TestKeyFingerprint, TestKeyFingerprintWithPassphrase}, keyIdentities)
 
 	// Invalid input: This is, sadly, accepted anyway by GPG, just returns no keys.
 	// For openpgpSigningMechanism we can detect this and fail.
@@ -195,7 +203,7 @@ func TestGPGSigningMechanismSign(t *testing.T) {
 	// The various GPG/GPGME failures cases are not obviously easy to reach.
 }
 
-func assertSigningError(t *testing.T, content []byte, fingerprint string, err error, msgAndArgs ...interface{}) {
+func assertSigningError(t *testing.T, content []byte, fingerprint string, err error, msgAndArgs ...any) {
 	assert.Error(t, err, msgAndArgs...)
 	assert.Nil(t, content, msgAndArgs...)
 	assert.Empty(t, fingerprint, msgAndArgs...)
